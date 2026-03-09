@@ -1,0 +1,39 @@
+{
+  "project_info": {
+    "project_number": "1016276758253",
+    "project_id": "pcgl-volontari",
+    "storage_bucket": "pcgl-volontari.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:1016276758253:android:9f8c956705fe99a16e66e4",
+        "android_client_info": {
+          "package_name": "pcgl.it"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "1016276758253-2nlni6839dsmr5jd1fetvk6r45r1pv37.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyA2NRwbiAWAVmqdIpeRY7k7N0MTjPrV4Tw"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "1016276758253-2nlni6839dsmr5jd1fetvk6r45r1pv37.apps.googleusercontent.com",
+              "client_type": 3
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

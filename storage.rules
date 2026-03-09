@@ -1,0 +1,91 @@
+rules_version = '2';
+service firebase.storage {
+  match /b/{bucket}/o {
+
+    // --- FUNZIONI DI SUPPORTO ---
+    
+    // Verifica se l'utente è autenticato
+    function isSignedIn() {
+      return request.auth != null;
+    }
+    
+    // Verifica se il file è un'immagine
+    function isImage() {
+      return request.resource.contentType.matches('image/.*');
+    }
+    
+    // Verifica dimensione file (in MB)
+    function isValidSize(maxSizeMB) {
+      return request.resource.size < maxSizeMB * 1024 * 1024;
+    }
+
+    // Recupera i dati dell'utente corrente da Firestore
+    function getUserData() {
+      return firestore.get(/databases/(default)/documents/users/$(request.auth.uid)).data;
+    }
+
+    // Verifica se l'utente fa parte dello staff (Admin, Superadmin, Coordinamento)
+    function isStaff() {
+      let role = getUserData().ruolo;
+      return role == 'admin' || role == 'superadmin' || role == 'coordinamento';
+    }
+
+    function isPresidente() {
+      return getUserData().ruolo == 'presidente';
+    }
+
+    // --- REGOLE PER I PERCORSI ---
+
+    // 1. FOTO PROFILO (Max 5MB, Solo Immagini, Solo proprietario)
+    match /profile_pictures/{userId} {
+      allow read: if true; // Le foto profilo sono pubbliche
+      allow write: if isSignedIn() && request.auth.uid == userId 
+                   && isImage() && isValidSize(5);
+    }
+
+    // 2. DOCUMENTI MODULI (Max 10MB)
+    match /module_docs/{moduleId}/{fileName} {
+      function isModuleMember() {
+        return request.auth.uid in get(/databases/(default)/documents/moduli/$(moduleId)).data.membri;
+      }
+      function canUploadToModule() {
+        let module = get(/databases/(default)/documents/moduli/$(moduleId)).data;
+        return module.adminId == request.auth.uid || (module.allowMemberUploads && isModuleMember());
+      }
+      allow read: if isSignedIn() && (isModuleMember() || hasRole('coordinamento'));
+      allow write: if isSignedIn() && isValidSize(10) && (hasRole('admin') || canUploadToModule());
+    }
+
+    // 3. DOCUMENTI MEZZI (Max 10MB)
+    match /mezzi_docs/{vehicleId}/{fileName} {
+      function vehicleSede() {
+        return firestore.get(/databases/(default)/documents/mezzi/$(vehicleId)).data.sede;
+      }
+      allow read: if isSignedIn() && (isStaff() || getUserData().sede == vehicleSede());
+      allow write: if isSignedIn() && isValidSize(10) && (isStaff() || (isPresidente() && getUserData().sede == vehicleSede()));
+    }
+
+    // 4. DOCUMENTI SEDE (Max 10MB)
+    match /documenti_sede/{sede}/{fileName} {
+      allow read: if isSignedIn() && (isStaff() || getUserData().sede == sede);
+      allow write: if isSignedIn() && isValidSize(10) && (isStaff() || (isPresidente() && getUserData().sede == sede));
+    }
+
+    // 5. LOGHI SEDI (Max 5MB)
+    match /sedi_logos/{sede}/{fileName} {
+      allow read: if true; // I loghi sono pubblici
+      allow write: if isSignedIn() && isImage() && isValidSize(5) && (isStaff() || (isPresidente() && getUserData().sede == sede));
+    }
+    
+    // 6. SCREENSHOT SEGNALAZIONI (Max 5MB)
+    match /reports_screenshots/{userId}/{fileName} {
+      allow read: if hasRole('superadmin');
+      allow write: if isSignedIn() && request.auth.uid == userId && isImage() && isValidSize(5);
+    }
+    
+    // Blocca tutto il resto (Sicurezza Default per evitare l'avviso via mail)
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+  }
+}

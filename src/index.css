@@ -1,0 +1,26 @@
+@import "tailwindcss";
+
+/* Forza la modalità dark solo se è presente la classe .dark (che abbiamo rimosso via JS) */
+@variant dark (&:where(.dark, .dark *));
+
+@theme {
+  --color-pcgl-blue: #003366;
+  --color-pcgl-yellow: #FFCC00;
+  --color-pcgl-bg-light: #f4f6f8;
+  --color-pcgl-text-dark: #333333;
+
+  --radius-4xl: 2rem;
+  --radius-5xl: 2.5rem;
+  --radius-6xl: 3rem;
+  --radius-7xl: 3.5rem;
+  --radius-8xl: 4rem;
+  --radius-9xl: 4.5rem;
+
+  --shadow-card: 0 4px 12px rgba(0, 0, 0, 0.05);
+}
+
+@layer base {
+  body {
+    @apply bg-pcgl-bg-light font-sans antialiased text-pcgl-text-dark;
+  }
+}

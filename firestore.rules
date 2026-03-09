@@ -1,0 +1,446 @@
+rules_version = '2';
+
+/**
+ * ==============================================================================
+ * PROGETTO: HQ PROTEZIONE CIVILE GRUPPO LUCANO (PCGL)
+ * REGOLE DI SICUREZZA FIRESTORE - VERSIONE 2026.Q1
+ * ==============================================================================
+ * Queste regole gestiscono l'accesso granulare basato su ruoli gerarchici.
+ * Copre: News Pubbliche, Albo Pretorio, Protocollo, FAD, Mezzi e Moduli Operativi.
+ */
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ==========================================================================
+    // --- 1. FUNZIONI DI SUPPORTO E LOGICA DI ACCESSO CORE ---
+    // ==========================================================================
+
+    /**
+     * Verifica se la richiesta proviene da un utente autenticato con Firebase Auth.
+     * È la condizione base per quasi tutte le operazioni private.
+     */
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    /**
+     * Recupera il documento utente dalla collezione /users.
+     * Include un fallback di sicurezza per evitare errori se il documento non esiste.
+     */
+    function getUserData() {
+      let userPath = /databases/$(database)/documents/users/$(request.auth.uid);
+      return exists(userPath) ? get(userPath).data : {
+        'ruolo': 'volontario', 
+        'sede': 'unknown',
+        'stato': 'inattivo'
+      };
+    }
+
+    /**
+     * Verifica se l'utente possiede un ruolo specifico passato come stringa.
+     */
+    function hasRole(role) {
+      return getUserData().ruolo == role;
+    }
+
+    /**
+     * LIVELLO 4: SUPERADMIN
+     * Utente con poteri assoluti sul database, solitamente limitato agli sviluppatori.
+     */
+    function isSuperAdmin() {
+      return hasRole('superadmin');
+    }
+
+    /**
+     * LIVELLO 3: ADMIN
+     * Gestione nazionale del sistema, abilitazione utenti e configurazioni core.
+     */
+    function isAdmin() {
+      return hasRole('admin') || isSuperAdmin();
+    }
+
+    /**
+     * LIVELLO 2: COORDINAMENTO
+     * Personale HQ autorizzato alla gestione di Protocollo, Albo e Formazione.
+     */
+    function isCoordinamento() {
+      return hasRole('coordinamento') || isAdmin();
+    }
+
+    /**
+     * LIVELLO 1: PRESIDENTE
+     * Gestore di una specifica sede territoriale. Ha poteri sulla propria sede.
+     */
+    function isPresidente() {
+      return hasRole('presidente') || isCoordinamento();
+    }
+
+    /**
+     * Verifica se l'utente appartiene a una specifica sede operativa.
+     * Utilizza .upper() per evitare errori di case-sensitivity tra minuscole/maiuscole.
+     */
+    function belongsToSede(sedeTarget) {
+      return getUserData().sede.upper() == sedeTarget.upper();
+    }
+
+    /**
+     * Helper per le modifiche ai mezzi. Verifica se l'utente sta modificando
+     * solo l'array o il campo dei chilometri attuali.
+     */
+    function isOnlyUpdatingKm() {
+      return request.resource.data.diff(resource.data).affectedKeys().hasOnly(['kmAttuali']);
+    }
+
+    /**
+     * Verifica se l'utente è il responsabile di un modulo operativo.
+     */
+    function isModuleAdmin(moduloId) {
+      let modulePath = /databases/$(database)/documents/moduli/$(moduloId);
+      return exists(modulePath) && 
+             get(modulePath).data.adminId == request.auth.uid;
+    }
+
+    // ==========================================================================
+    // --- 2. SEZIONE NEWS (PUBBLICITÀ ISTITUZIONALE) ---
+    // ==========================================================================
+
+    match /news/{document=**} {
+      /**
+       * RISOLUZIONE ERRORE SYNC:
+       * Per permettere al sito index pcgl.it di mostrare le news, la lettura
+       * deve essere permessa a chiunque (anche utenti non loggati).
+       */
+      allow read: if true;
+      
+      /**
+       * Solo il Presidente (per la propria sede) o il Coordinamento (news nazionali)
+       * possono pubblicare o modificare notizie.
+       */
+      allow write: if isSignedIn() && isPresidente();
+    }
+
+    // ==========================================================================
+    // --- 3. ALBO PRETORIO (TRASPARENZA E ATTI) ---
+    // ==========================================================================
+
+    match /albo_pretorio/{attoId} {
+      /**
+       * Trasparenza Pubblica:
+       * Se l'atto è marcato come 'pubblica', è accessibile a tutti per fini legali.
+       * Altrimenti, è necessario essere un volontario loggato.
+       */
+      allow read: if (resource.data.visibilita == 'pubblica') || isSignedIn();
+      
+      /**
+       * Creazione e Update: 
+       * Permessa al Coordinamento. L'update è fondamentale per correggere refusi
+       * o aggiornare lo stato di pubblicazione senza eliminare l'atto.
+       */
+      allow create, update: if isSignedIn() && isCoordinamento();
+      
+      /**
+       * Eliminazione: 
+       * Riservata al Superadmin per garantire la non-ripudiabilità degli atti ufficiali.
+       */
+      allow delete: if isSignedIn() && isSuperAdmin();
+    }
+
+    // ==========================================================================
+    // --- 4. PROTOCOLLO E POSTA (ARUBA BRIDGE VPS) ---
+    // ==========================================================================
+
+    /**
+     * Registro Protocollo Nazionale (Riservato HQ).
+     */
+    match /protocollo/{protoId} {
+      allow read, write: if isSignedIn() && isCoordinamento();
+    }
+
+    /**
+     * Posta in arrivo:
+     * Area di triage dove arrivano le mail dallo script bridge Aruba (VPS).
+     */
+    match /posta_in_arrivo/{mailId} {
+      allow read, write: if isSignedIn() && isCoordinamento();
+    }
+
+    /**
+     * Code di Invio:
+     * Documenti scritti qui vengono rilevati dal bridge per l'invio SMTP/PEC.
+     */
+    match /mail_queue/{mailId} {
+      allow read, write: if isSignedIn() && isCoordinamento();
+    }
+
+    match /pec_queue/{pecId} {
+      allow read, write: if isSignedIn() && isCoordinamento();
+    }
+
+    // ==========================================================================
+    // --- 5. FAD (FORMAZIONE A DISTANZA INTEGRATA) ---
+    // ======================================================
+
+    /**
+     * Collezione Corsi: Elenco dei corsi disponibili ai volontari.
+     */
+    match /corsi/{corsoId} {
+      allow read: if isSignedIn();
+      allow write: if isSignedIn() && isCoordinamento();
+
+      /**
+       * Sottocollezione Lezioni: Link a video e dispense didattiche.
+       */
+      match /lezioni/{lezioneId} {
+        allow read: if isSignedIn();
+        allow write: if isSignedIn() && isCoordinamento();
+      }
+    }
+
+    /**
+     * Iscrizioni e Tracking Formazione.
+     */
+    match /iscrizioni_corsi/{iscrizioneId} {
+      allow read: if isSignedIn();
+      // Un volontario può iscriversi da solo a un corso aperto.
+      allow create: if isSignedIn() && request.resource.data.volontarioId == request.auth.uid;
+      // Il Coordinamento gestisce esiti e cancellazioni.
+      allow update, delete: if isCoordinamento() || (isSignedIn() && resource.data.volontarioId == request.auth.uid);
+    }
+
+    // ==========================================================================
+    // --- 6. UTENTI E ANAGRAFICA ---
+    // ==========================================================================
+
+    match /users/{userId} {
+      allow read: if isSignedIn();
+      allow create: if isSignedIn() && request.auth.uid == userId;
+      allow update: if isSignedIn() && (
+        request.auth.uid == userId || 
+        isCoordinamento() || 
+        (isPresidente() && belongsToSede(resource.data.sede))
+      );
+      allow delete: if isCoordinamento() || (isPresidente() && belongsToSede(resource.data.sede));
+    }
+
+    /**
+     * Documentazione Sensibile: Visite mediche, Patenti e Attestati.
+     */
+    match /documenti_volontari/{docId} {
+      allow read: if isSignedIn() && (resource.data.volontarioId == request.auth.uid || isCoordinamento());
+      allow write: if isCoordinamento();
+    }
+
+    /**
+     * Anagrafica Sedi: Dati geografici e recapiti.
+     */
+    match /sedi_anagrafica/{docId} {
+      allow read: if isSignedIn();
+      allow create, update: if isSignedIn() && (
+        isCoordinamento() || (isPresidente() && belongsToSede(request.resource.data.sede))
+      );
+      allow delete: if isCoordinamento();
+    }
+
+    // ==========================================================================
+    // --- 7. MODULI OPERATIVI (SQUADRE E SPECIALISTICA) ---
+    // ==========================================================================
+
+    match /moduli/{moduloId} {
+      allow read: if isSignedIn();
+      allow create, delete: if isSignedIn() && isAdmin();
+      
+      /**
+       * Update permesso a: Admin, Responsabile del modulo, o membro che esce.
+       */
+      allow update: if isSignedIn() && (
+        isAdmin() ||
+        resource.data.adminId == request.auth.uid ||
+        (request.resource.data.membri.size() == resource.data.membri.size() - 1 && 
+         request.auth.uid in resource.data.membri && 
+         !(request.auth.uid in request.resource.data.membri))
+      );
+
+      /**
+       * Chat interna del Modulo Operativo.
+       */
+      match /chat/{msgId} {
+        allow read, create: if isSignedIn() && (
+          request.auth.uid in get(/databases/$(database)/documents/moduli/$(moduloId)).data.membri ||
+          get(/databases/$(database)/documents/moduli/$(moduloId)).data.adminId == request.auth.uid ||
+          isCoordinamento()
+        );
+      }
+    }
+
+    /**
+     * Gestione Richieste Adesione Squadre.
+     */
+    match /richieste_modulo/{requestId} {
+      allow read: if isSignedIn() && (isCoordinamento() || resource.data.volontarioId == request.auth.uid);
+      // L'update è permesso al Coordinamento o al responsabile del modulo per approvare/rifiutare.
+      allow update: if isSignedIn() && (isCoordinamento() || isModuleAdmin(resource.data.moduloId));
+      allow create: if false; // Solo tramite Cloud Functions
+      allow delete: if isAdmin();
+    }
+
+    // ==========================================================================
+    // --- 8. EMERGENZA, ATTIVAZIONI E MONITORAGGIO ---
+    // ==========================================================================
+
+    match /attivazioni/{alertId} {
+      allow read: if isSignedIn();
+      allow create: if isCoordinamento() || (
+        isPresidente() && request.resource.data.zone.hasOnly([getUserData().sede])
+      );
+      allow update: if isCoordinamento() || (
+        isPresidente() && resource.data.creatorUid == request.auth.uid
+      );
+    }
+
+    /**
+     * Partecipazione Volontari alle Allerte.
+     */
+    match /partecipazioni_allerta/{partId} {
+      allow read: if isSignedIn();
+      allow write: if isSignedIn() && (
+        request.auth.uid == partId.split('_')[1] || isCoordinamento()
+      );
+    }
+
+    match /reports_monitoraggio/{reportId} {
+      allow read: if isSignedIn();
+      allow create: if isSignedIn() && request.resource.data.volontarioId == request.auth.uid;
+    }
+
+    match /reports_problemi/{reportId} {
+      allow read: if isSignedIn() && (resource.data.uid == request.auth.uid || isAdmin());
+      allow update: if isSignedIn() && (isAdmin() || resource.data.uid == request.auth.uid);
+      allow create: if isSignedIn();
+    }
+
+    // ==========================================================================
+    // --- 9. LOGISTICA E AUTOPARCO (MEZZI) ---
+    // ==========================================================================
+
+    match /mezzi/{mezzoId} {
+      allow read: if isSignedIn() && (isAdmin() || isCoordinamento() || belongsToSede(resource.data.sede));
+      allow create: if isSignedIn() && (isCoordinamento() || isPresidente());
+      allow update: if isSignedIn() && (
+        isAdmin() || isCoordinamento() || 
+        (isPresidente() && belongsToSede(resource.data.sede)) ||
+        (hasRole('volontario') && belongsToSede(resource.data.sede) && isOnlyUpdatingKm() && request.resource.data.kmAttuali >= resource.data.kmAttuali)
+      );
+      allow delete: if isSignedIn() && (isCoordinamento() || (isPresidente() && belongsToSede(resource.data.sede)));
+    }
+
+    match /movimenti_mezzi/{movimentoId} {
+      allow read: if isSignedIn() && (isCoordinamento() || resource.data.volontarioId == request.auth.uid || belongsToSede(resource.data.sede));
+      allow create: if isSignedIn() && request.resource.data.volontarioId == request.auth.uid;
+      allow update: if isSignedIn() && (isAdmin() || isCoordinamento() || resource.data.volontarioId == request.auth.uid);
+    }
+
+    // ==========================================================================
+    // --- 10. GESTIONE FORMS (SISTEMA DATI DINAMICO) ---
+    // ==========================================================================
+
+    match /module_forms/{formId} {
+      // ATTENZIONE: Questa collezione sembra non essere più in uso attivo, ma le regole
+      // sono state rese più sicure per prevenire abusi.
+      allow read: if isSignedIn();
+      allow create: if isSignedIn() && isCoordinamento();
+      allow update, delete: if isSignedIn() && (isCoordinamento() || resource.data.createdBy == request.auth.uid);
+    }
+
+    match /custom_forms/{formId} {
+      // Lettura permessa al responsabile del modulo o allo staff.
+      allow get: if isSignedIn() && (isCoordinamento() || resource.data.responsibleId == request.auth.uid);
+      // Il list è permesso solo al Coordinamento (che può vedere tutto).
+      // I singoli responsabili possono fare query filtrate lato client (es. where('responsibleId', '==', uid))
+      // che vengono validate dalla regola 'get' su ogni documento.
+      allow list: if isSignedIn() && isCoordinamento();
+      allow create: if isCoordinamento();
+      allow update, delete: if isSignedIn() && (isCoordinamento() || resource.data.responsibleId == request.auth.uid);
+    }
+
+    function isFormResponsible(formId) {
+      let formPath = /databases/$(database)/documents/custom_forms/$(formId);
+      return exists(formPath) && 
+             get(formPath).data.responsibleId == request.auth.uid;
+    }
+
+    match /form_responses/{responseId} {
+      /**
+       * Read: Permesso per verificare disponibilità o Staff per triage.
+       */
+      allow read: if isSignedIn();
+      allow create: if isSignedIn() && request.resource.data.userId == request.auth.uid;
+      allow update, delete: if isCoordinamento();
+    }
+
+    // ==========================================================================
+    // --- 11. COMUNICAZIONI E SISTEMA ---
+    // ==========================================================================
+
+    match /chat_sede/{msgId} {
+      allow read: if isSignedIn();
+      allow create: if isSignedIn() && request.resource.data.uid == request.auth.uid;
+    }
+
+    match /disponibilita/{docId} {
+      allow read: if isSignedIn();
+      allow create, update: if isSignedIn() && request.resource.data.uid == request.auth.uid;
+      allow delete: if isSignedIn() && resource.data.uid == request.auth.uid;
+    }
+
+    match /logs/{logId} {
+      allow read: if isSuperAdmin();
+      allow create: if isSignedIn();
+    }
+
+    match /settings/{document=**} {
+      /**
+       * Settings pubblici per loghi e testi UI dell'index.
+       */
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+
+    match /mail/{mailId} {
+      allow create: if isPresidente();
+    }
+
+    match /turni_programmati/{turnoId} {
+      allow read, write: if isSignedIn();
+    }
+
+    match /module_doc_comments/{commentId} {
+      allow read: if isSignedIn();
+      allow create: if isSignedIn();
+      allow update, delete: if isSignedIn() && (resource.data.uid == request.auth.uid || isCoordinamento());
+    }
+
+    match /documenti/{document=**} {
+      allow read: if isSignedIn();
+      allow write: if isPresidente();
+    }
+
+    match /risorse/{document=**} {
+      allow read: if isSignedIn();
+      allow write: if isPresidente();
+    }
+
+    // ==========================================================================
+    // --- 12. REGOLA DI CHIUSURA FINALE (CATCH-ALL) ---
+    // ==========================================================================
+
+    match /{document=**} {
+      /**
+       * Sicurezza Totale:
+       * Qualsiasi percorso non definito sopra è inaccessibile a chiunque
+       * tranne che al Superadmin.
+       */
+      allow read, write: if isSuperAdmin();
+    }
+  }
+}

@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">PCGL Volontari</string>
+    <string name="title_activity_main">PCGL Volontari</string>
+    <string name="package_name">it.pcgl.volontari</string>
+    <string name="custom_url_scheme">it.pcgl.volontari</string>
+</resources>
