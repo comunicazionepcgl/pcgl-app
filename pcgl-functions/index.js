@@ -8,8 +8,10 @@ const { onDocumentCreated, onDocumentUpdated } = require("firebase-functions/v2/
 const { onCall, HttpsError, onRequest } = require("firebase-functions/v2/https");
 const { onSchedule } = require("firebase-functions/v2/scheduler");
 const { setGlobalOptions } = require("firebase-functions/v2");
+const { defineSecret } = require("firebase-functions/params");
 const logger = require("firebase-functions/logger");
 const admin = require("firebase-admin");
+const crypto = require("crypto");
 const cors = require("cors")({ origin: true });
 
 // Inizializzazione Admin
@@ -18,9 +20,51 @@ if (admin.apps.length === 0) {
 }
 
 // Configurazione Globale V2
-setGlobalOptions({ region: "europe-west1", maxInstances: 10, timeoutSeconds: 60, memory: "512MiB" });
+// I token sono nei Secrets di Firebase (firebase functions:secrets:set NOME) e arrivano come process.env.NOME
+setGlobalOptions({
+    region: "europe-west1", maxInstances: 10, timeoutSeconds: 60, memory: "512MiB",
+    secrets: [
+        defineSecret("MOODLE_TOKEN"),
+        defineSecret("MOODLE_ADMIN_TOKEN"),
+        defineSecret("TELEGRAM_BOT_TOKEN"),
+        defineSecret("TELEGRAM_SECRET_TOKEN")
+    ]
+});
 
 const LOGO_URL = "https://pcgl-volontari.web.app/logo.png?v=3";
+
+// --- CONFIGURAZIONE TELEGRAM ---
+const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
+const TELEGRAM_CHANNEL_ID = process.env.TELEGRAM_CHANNEL_ID || "@gruppolucano";
+const TELEGRAM_SECRET_TOKEN = process.env.TELEGRAM_SECRET_TOKEN;
+
+async function sendTelegramMessage(chatId, text, replyMarkup = null) {
+    const url = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`;
+    logger.info(`Inviando messaggio a ${chatId}: ${text}`);
+    
+    const payload = { 
+        chat_id: chatId, 
+        text: text, 
+        parse_mode: 'HTML',
+        disable_web_page_preview: false,
+    };
+    
+    if (replyMarkup) {
+        payload.reply_markup = replyMarkup;
+    }
+
+    const response = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+    });
+    const result = await response.json();
+    logger.info("Risposta da Telegram:", result);
+    if (!result.ok) {
+        throw new Error(result.description || "Errore sconosciuto da Telegram");
+    }
+    return result;
+}
 
 /**
  * TRIGGER: Nuova Iscrizione Volontario
@@ -88,6 +132,59 @@ exports.onVolunteerSignup = onDocumentCreated("users/{userId}", async (event) =>
 });
 
 /**
+ * ONCALL: Proxy sicuro per le API di Moodle (Corsi e Iscrizioni Utente)
+ */
+exports.getMoodleCoursesForUser = onCall({ region: "europe-west1", cors: true }, async (request) => {
+    if (!request.auth) throw new HttpsError('unauthenticated', 'Non autorizzato.');
+    const email = request.auth.token.email;
+    const MOODLE_URL = "https://formazione.pcgl.it";
+    const TOKEN = process.env.MOODLE_TOKEN;
+    
+    try {
+        const coursesRes = await fetch(`${MOODLE_URL}/webservice/rest/server.php?wstoken=${TOKEN}&wsfunction=core_course_get_courses&moodlewsrestformat=json`);
+        const allCourses = await coursesRes.json();
+        if (allCourses.exception) throw new Error(allCourses.message);
+        
+        const activeCourses = allCourses.filter(c => c.visible === 1 && c.id !== 1);
+        
+        let enrolledIds = [];
+        let moodleUserFound = false;
+        const userRes = await fetch(`${MOODLE_URL}/webservice/rest/server.php?wstoken=${TOKEN}&wsfunction=core_user_get_users_by_field&field=email&values[0]=${encodeURIComponent(email)}&moodlewsrestformat=json`);
+        const userData = await userRes.json();
+        
+        if (Array.isArray(userData) && userData.length > 0) {
+            moodleUserFound = true;
+            const moodleUserId = userData[0].id;
+            const enrolRes = await fetch(`${MOODLE_URL}/webservice/rest/server.php?wstoken=${TOKEN}&wsfunction=core_enrol_get_users_courses&userid=${moodleUserId}&moodlewsrestformat=json`);
+            const enrolData = await enrolRes.json();
+            if (Array.isArray(enrolData)) { enrolledIds = enrolData.map(c => c.id); }
+        }
+        
+        return { success: true, courses: activeCourses, enrolledIds, moodleUserFound };
+    } catch (error) { throw new HttpsError('internal', error.message); }
+});
+
+/**
+ * ONCALL: Proxy sicuro per le API di Moodle (Report Iscritti Admin)
+ */
+exports.getMoodleCourseReport = onCall({ region: "europe-west1", cors: true }, async (request) => {
+    if (!request.auth) throw new HttpsError('unauthenticated', 'Non autorizzato.');
+    const callerDoc = await admin.firestore().collection('users').doc(request.auth.uid).get();
+    if (!['admin', 'superadmin', 'coordinamento'].includes(callerDoc.data().ruolo)) {
+        throw new HttpsError('permission-denied', 'Permessi insufficienti.');
+    }
+    const { courseId } = request.data;
+    const MOODLE_URL = "https://formazione.pcgl.it";
+    const ADMIN_TOKEN = process.env.MOODLE_ADMIN_TOKEN;
+    try {
+        const res = await fetch(`${MOODLE_URL}/webservice/rest/server.php?wstoken=${ADMIN_TOKEN}&wsfunction=core_enrol_get_enrolled_users&courseid=${courseId}&moodlewsrestformat=json`);
+        const data = await res.json();
+        if (data.exception) throw new Error(data.message);
+        return { success: true, users: data };
+    } catch (error) { throw new HttpsError('internal', error.message); }
+});
+
+/**
  * TRIGGER: Approvazione Volontario
  */
 exports.onVolunteerApproved = onDocumentUpdated("users/{userId}", async (event) => {
@@ -97,12 +194,88 @@ exports.onVolunteerApproved = onDocumentUpdated("users/{userId}", async (event) 
     if (before.stato === 'pendente' && after.stato === 'attivo') {
         logger.info(`Utente approvato: ${after.nome} ${after.cognome}`);
         
+        let moodlePassword = "";
+        
+        // --- 1. SINCRONIZZAZIONE AUTOMATICA CON MOODLE ---
+        if (after.email && after.cf) {
+            try {
+                const MOODLE_URL = "https://formazione.pcgl.it";
+                const MOODLE_TOKEN = process.env.MOODLE_TOKEN;
+                
+                const safeCf = after.cf && after.cf !== 'N/D' ? after.cf : '0000000000000000';
+                moodlePassword = `Pcgl_${safeCf}!`;
+                
+                const baseParams = new URLSearchParams();
+                baseParams.append('users[0][username]', after.email.toLowerCase().trim());
+                baseParams.append('users[0][password]', moodlePassword);
+                baseParams.append('users[0][firstname]', (after.nome || 'Volontario').trim());
+                baseParams.append('users[0][lastname]', (after.cognome || 'PCGL').trim());
+                baseParams.append('users[0][email]', after.email.toLowerCase().trim());
+                if (after.cf && after.cf !== 'N/D') {
+                    baseParams.append('users[0][idnumber]', after.cf.toUpperCase().trim());
+                }
+                if (after.sede) baseParams.append('users[0][department]', after.sede);
+                baseParams.append('users[0][city]', (after.citta || 'Potenza').substring(0, 120));
+                if (after.telefono) baseParams.append('users[0][phone1]', after.telefono.replace(/\s+/g, '').substring(0, 20));
+                
+                const paramsWithCustom = new URLSearchParams(baseParams.toString());
+
+                let cfIdx = 0;
+                paramsWithCustom.append(`users[0][customfields][${cfIdx}][type]`, 'appartenenza');
+                paramsWithCustom.append(`users[0][customfields][${cfIdx}][value]`, 'Gruppo Lucano');
+                cfIdx++;
+                
+                paramsWithCustom.append(`users[0][customfields][${cfIdx}][type]`, 'cf');
+                paramsWithCustom.append(`users[0][customfields][${cfIdx}][value]`, after.cf || 'N/D');
+                cfIdx++;
+                
+                paramsWithCustom.append(`users[0][customfields][${cfIdx}][type]`, 'luogo');
+                paramsWithCustom.append(`users[0][customfields][${cfIdx}][value]`, after.luogoNascita || 'N/D');
+                cfIdx++;
+                
+                paramsWithCustom.append(`users[0][customfields][${cfIdx}][type]`, 'datanascita');
+                paramsWithCustom.append(`users[0][customfields][${cfIdx}][value]`, after.dataNascita || '01/01/1970');
+                cfIdx++;
+                
+                paramsWithCustom.append(`users[0][customfields][${cfIdx}][type]`, 'indirizzoemail');
+                paramsWithCustom.append(`users[0][customfields][${cfIdx}][value]`, after.email.toLowerCase().trim());
+                cfIdx++;
+                
+                paramsWithCustom.append(`users[0][customfields][${cfIdx}][type]`, 'cellulare');
+                paramsWithCustom.append(`users[0][customfields][${cfIdx}][value]`, (after.telefono || '0000000000').replace(/\s+/g, '').substring(0, 20));
+                cfIdx++;
+
+                const endpoint = `${MOODLE_URL}/webservice/rest/server.php?wstoken=${MOODLE_TOKEN}&wsfunction=core_user_create_users&moodlewsrestformat=json`;
+                
+                let res = await fetch(endpoint, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                    body: paramsWithCustom.toString()
+                });
+                
+                let data = await res.json();
+                
+                if (data && data.exception === 'core\\exception\\invalid_parameter_exception') {
+                    logger.warn("Creazione Moodle fallita con custom fields. Ritento in modalità sicura (dati base)...");
+                    res = await fetch(endpoint, { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: baseParams.toString() });
+                    data = await res.json();
+                }
+
+                if (data && data.exception) {
+                    logger.warn("Avviso Moodle (probabilmente l'utente esiste già):", data.message);
+                } else {
+                    logger.info(`Account Moodle creato per ${after.email}`);
+                }
+            } catch (err) { logger.error("Errore sincronizzazione Moodle:", err); }
+        }
+
+        // --- 2. NOTIFICA DI BENVENUTO ---
         if (after.fcmToken) {
             try {
                 await admin.messaging().send({
                     notification: {
                         title: "Iscrizione Approvata! 🎉",
-                        body: "Benvenuto nel team! Il tuo account è ora attivo. Accedi per operare.",
+                        body: `Benvenuto nel team! Il tuo account è ora attivo. La tua password per i corsi E-Learning è: ${moodlePassword}`,
                         image: LOGO_URL
                     },
                     token: after.fcmToken
@@ -168,7 +341,8 @@ exports.onAlertCreated = onDocumentCreated("attivazioni/{alertId}", async (event
             if (shouldNotify) targetTokens.push(user.fcmToken);
         });
 
-        if (targetTokens.length > 0) {
+        const uniqueTokens = [...new Set(targetTokens)];
+        if (uniqueTokens.length > 0) {
             await admin.messaging().sendEachForMulticast({
                 notification: {
                     title: `${emoji} ALLERTA ${color.toUpperCase()}`,
@@ -180,9 +354,29 @@ exports.onAlertCreated = onDocumentCreated("attivazioni/{alertId}", async (event
                     type: 'attivazione',
                     color: color
                 },
-                tokens: targetTokens
+                android: {
+                    notification: {
+                        channelId: 'alert-pcgl',
+                        sound: 'default',
+                        vibrateTimingsMillis: [500, 200, 500, 200, 500],
+                        priority: 'high',
+                        defaultVibrateTimings: false
+                    }
+                },
+                apns: {
+                    payload: { aps: { sound: 'default' } }
+                },
+                tokens: uniqueTokens
             });
         }
+
+        // Invia al Canale Telegram
+        const alertTime = new Intl.DateTimeFormat('it-IT', { timeZone: 'Europe/Rome', day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' }).format(new Date(alertData.dataAttivazione));
+        const escapeHtml = (text) => (text || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+        const channelText = `🚨 <b>ALLERTA ${color.toUpperCase()}</b>\n\n<b>${escapeHtml(alertData.titolo)}</b>\n⏰ Attivazione: ${alertTime}\n📍 Zone interessate: ${escapeHtml(targetZones.join(', '))}\n${alertData.dettagli ? '\n📝 Dettagli: ' + escapeHtml(alertData.dettagli) : ''}`;
+        
+        const replyMarkup = { inline_keyboard: [[{ text: "🚨 Apri l'App per Dettagli", url: "https://pcgl-volontari.web.app/" }]] };
+        await sendTelegramMessage(TELEGRAM_CHANNEL_ID, channelText, replyMarkup);
     } catch (error) {
         logger.error("Errore onAlertCreated:", error);
     }
@@ -209,8 +403,9 @@ exports.broadcastAlert = onCall(async (request) => {
     try {
         const usersSnapshot = await admin.firestore().collection('users').where('stato', '==', 'attivo').get();
         const tokens = usersSnapshot.docs.map(doc => doc.data().fcmToken).filter(token => token);
+        const uniqueTokens = [...new Set(tokens)];
 
-        if (tokens.length === 0) return { success: true, count: 0 };
+        if (uniqueTokens.length === 0) return { success: true, count: 0 };
 
         const response = await admin.messaging().sendEachForMulticast({
             notification: {
@@ -218,7 +413,7 @@ exports.broadcastAlert = onCall(async (request) => {
                 body: body || "Attivazione protocollo Sentinel. Controllare l'app.",
                 image: LOGO_URL
             },
-            tokens: tokens
+            tokens: uniqueTokens
         });
 
         return { success: true, count: response.successCount, failures: response.failureCount };
@@ -275,25 +470,67 @@ exports.onNewsCreated = onDocumentCreated("news/{newsId}", async (event) => {
     if (!snapshot) return;
 
     const newsData = snapshot.data();
-    if (!newsData || !newsData.importante) return;
+    if (!newsData) return;
 
     try {
-        const usersSnapshot = await admin.firestore().collection('users').where('stato', '==', 'attivo').get();
-        const tokens = usersSnapshot.docs.map(doc => doc.data().fcmToken).filter(token => token);
+        // 1. Notifica Push FCM (Solo se importante)
+        if (newsData.importante) {
+            const usersSnapshot = await admin.firestore().collection('users').where('stato', '==', 'attivo').get();
+            const tokens = usersSnapshot.docs.map(doc => doc.data().fcmToken).filter(token => token);
+            const uniqueTokens = [...new Set(tokens)];
 
-        if (tokens.length > 0) {
-            await admin.messaging().sendEachForMulticast({
-                notification: {
-                    title: "⚠️ AVVISO IMPORTANTE",
-                    body: newsData.titolo,
-                    image: LOGO_URL
-                },
-                data: {
-                    newsId: event.params.newsId,
-                    type: 'news'
-                },
-                tokens: tokens
-            });
+            if (uniqueTokens.length > 0) {
+                await admin.messaging().sendEachForMulticast({
+                    notification: {
+                        title: "⚠️ AVVISO IMPORTANTE",
+                        body: newsData.titolo,
+                        image: LOGO_URL
+                    },
+                    data: {
+                        newsId: event.params.newsId,
+                        type: 'news'
+                    },
+                    tokens: uniqueTokens
+                });
+            }
+        }
+
+        // 2. Integrazione Bot Telegram
+        const escapeHtml = (text) => (text || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+        const testoMessaggio = newsData.testoBreve || newsData.contenuto || newsData.testo || "";
+        const channelText = `📰 <b>${escapeHtml(newsData.titolo)}</b>\n\n${escapeHtml(testoMessaggio)}`;
+
+        const isPubblica = newsData.visibilita === 'pubblica';
+        const isRiservataTutti = newsData.visibilita === 'riservata' && (!newsData.targetRuolo || newsData.targetRuolo === 'tutti') && (!newsData.targetSede || newsData.targetSede === 'tutte');
+        const replyMarkup = { inline_keyboard: [[{ text: "📰 Leggi la News sull'App", url: "https://pcgl-volontari.web.app/" }]] };
+
+        if (newsData.inviaTelegram !== false) {
+            if (isPubblica || isRiservataTutti) {
+                try {
+                    await sendTelegramMessage(TELEGRAM_CHANNEL_ID, channelText, replyMarkup);
+                } catch (e) {
+                    logger.error("Errore invio News al Canale Telegram:", e);
+                }
+            }
+            
+            if (newsData.visibilita === 'riservata' && !isRiservataTutti) {
+                try {
+                    const usersSnap = await admin.firestore().collection('users').where('telegramChatId', '!=', null).get();
+                    const promises = [];
+                    usersSnap.forEach(doc => {
+                        const user = doc.data();
+                        const roleMatch = !newsData.targetRuolo || newsData.targetRuolo === 'tutti' || newsData.targetRuolo === user.ruolo;
+                        const sedeMatch = !newsData.targetSede || newsData.targetSede === 'tutte' || newsData.targetSede === user.sede;
+                        
+                        if (roleMatch && sedeMatch && user.telegramChatId) {
+                            promises.push(sendTelegramMessage(user.telegramChatId, channelText, replyMarkup).catch(() => {}));
+                        }
+                    });
+                    await Promise.all(promises);
+                } catch (e) {
+                    logger.error("Errore invio News a Chat Private Telegram:", e);
+                }
+            }
         }
     } catch (error) {
         logger.error("Errore onNewsCreated:", error);
@@ -761,6 +998,7 @@ exports.getMeteoCampania = onRequest({ region: "europe-west1" }, (request, respo
 
 // --- COSTANTI PER METEO ---
 const SEDI_ZONES = [
+  { s: "SEDE TEST FITTIZIA", z: "TEST" },
   { s: "PERGOLA DI MARSICONUOVO (SOGL)", z: "BASI C" }, { s: "VIGGIANO (COORD. NAZIONALE)", z: "BASI C" },
   { s: "ACCETTURA", z: "BASI B" }, { s: "ALIANO", z: "BASI C" }, { s: "BERNALDA", z: "BASI E2" },
   { s: "CIRIGLIANO", z: "BASI C" }, { s: "CRACO", z: "BASI E1" }, { s: "GORGOGLIONE", z: "BASI C" },
@@ -893,10 +1131,11 @@ exports.checkWeatherUpdates = onSchedule({ schedule: "every day 14:00", timeZone
             for (const [key, tokens] of Object.entries(zoneGroups)) {
                 const [title, body, link] = key.split('|');
                 const chunkSize = 500;
-                for (let i = 0; i < tokens.length; i += chunkSize) {
+                const uniqueTokens = [...new Set(tokens)];
+                for (let i = 0; i < uniqueTokens.length; i += chunkSize) {
                     const message = {
                         notification: { title, body, image: LOGO_URL },
-                        tokens: tokens.slice(i, i + chunkSize)
+                        tokens: uniqueTokens.slice(i, i + chunkSize)
                     };
                     if (link) message.data = { type: 'meteo', link };
                     await admin.messaging().sendEachForMulticast(message);
@@ -930,6 +1169,21 @@ exports.onAlertClosed = onDocumentUpdated("attivazioni/{alertId}", async (event)
 
             const uids = partsSnapshot.docs.map(d => d.data().uid);
             if (uids.length === 0) return;
+
+            let acceptedCount = 0;
+            let declinedCount = 0;
+            partsSnapshot.forEach(doc => {
+                const s = doc.data().status;
+                if (s === 'accepted') acceptedCount++;
+                else if (s === 'declined') declinedCount++;
+            });
+
+            await admin.firestore().collection('logs').add({
+                azione: "RIEPILOGO ALLERTA",
+                dettagli: `L'allerta "${alertTitle}" è stata ricevuta/aperta da ${partsSnapshot.size} dispositivi. Partecipanti confermati: ${acceptedCount}. Rifiuti: ${declinedCount}.`,
+                autore: "SISTEMA",
+                data: new Date().toISOString()
+            });
 
             // Recupera token utenti
             const tokens = [];
@@ -1269,4 +1523,821 @@ exports.checkVehicleExpirations = onSchedule({ schedule: "every day 09:00", time
     } catch (error) {
         logger.error("Errore checkVehicleExpirations:", error);
     }
+});
+
+/**
+ * ONREQUEST: Sincronizzazione massiva utenti esistenti su Moodle
+ */
+exports.syncExistingUsersToMoodle = onRequest({ region: "europe-west1", timeoutSeconds: 300 }, async (request, response) => {
+    // Wrapper Promise per CORS
+    try {
+        await new Promise((resolve, reject) => {
+            cors(request, response, (err) => {
+                if (err) reject(err);
+                else resolve();
+            });
+        });
+
+        const idToken = request.headers.authorization?.split('Bearer ')[1];
+        if (!idToken) { response.status(401).json({ error: 'Unauthorized' }); return; }
+        
+        const decodedToken = await admin.auth().verifyIdToken(idToken);
+        const callerUid = decodedToken.uid;
+        
+        const callerDoc = await admin.firestore().collection('users').doc(callerUid).get();
+        if (!callerDoc.exists || callerDoc.data().ruolo !== 'superadmin') {
+            response.status(403).json({ error: 'Solo i superadmin possono forzare la sincronizzazione.' });
+            return;
+        }
+
+        const usersSnapshot = await admin.firestore().collection('users').where('stato', '==', 'attivo').get();
+        
+        const MOODLE_URL = "https://formazione.pcgl.it";
+        const MOODLE_TOKEN = process.env.MOODLE_TOKEN;
+        
+        let successCount = 0;
+        let errorCount = 0;
+        let errorList = [];
+        const users = usersSnapshot.docs.map(d => d.data());
+        
+        // Processiamo gli utenti a blocchi (chunking) per evitare Timeout
+        const chunkSize = 10;
+        for (let i = 0; i < users.length; i += chunkSize) {
+            const chunk = users.slice(i, i + chunkSize);
+            await Promise.all(chunk.map(async (user) => {
+                if (!user.email) return;
+
+                const safeCf = user.cf && user.cf !== 'N/D' ? user.cf : '0000000000000000';
+                const moodlePassword = `Pcgl_${safeCf}!`;
+                const emailStr = user.email.toLowerCase().trim();
+                const fname = (user.nome || 'Volontario').trim().substring(0, 100);
+                const lname = (user.cognome || 'PCGL').trim().substring(0, 100);
+                const city = (user.citta || 'Potenza').substring(0, 120);
+                const phone = (user.telefono || '0000000000').replace(/\s+/g, '').substring(0, 20);
+
+                // CERCHIAMO SEMPRE PRIMA PER EMAIL PER CAPIRE SE FARE CREATE O UPDATE
+                let isUpdate = false;
+                let moodleUserId = null;
+                
+                try {
+                    // 1. Cerca per email
+                    const searchByEmailEndpoint = `${MOODLE_URL}/webservice/rest/server.php?wstoken=${MOODLE_TOKEN}&wsfunction=core_user_get_users_by_field&field=email&values[0]=${encodeURIComponent(emailStr)}&moodlewsrestformat=json`;
+                    let searchRes = await fetch(searchByEmailEndpoint);
+                    const searchData = await searchRes.json();
+
+                    if (Array.isArray(searchData) && searchData.length > 0) {
+                        isUpdate = true;
+                        moodleUserId = searchData[0].id;
+                    } else {
+                        // 2. Se non trovato, cerca per username (che per noi è l'email)
+                        const searchByUsernameEndpoint = `${MOODLE_URL}/webservice/rest/server.php?wstoken=${MOODLE_TOKEN}&wsfunction=core_user_get_users_by_field&field=username&values[0]=${encodeURIComponent(emailStr)}&moodlewsrestformat=json`;
+                        searchRes = await fetch(searchByUsernameEndpoint);
+                        const searchDataByUsername = await searchRes.json();
+                        if (Array.isArray(searchDataByUsername) && searchDataByUsername.length > 0) {
+                            isUpdate = true;
+                            moodleUserId = searchDataByUsername[0].id;
+                        }
+                    }
+                } catch(e) {
+                    logger.warn(`Errore durante la ricerca dell'utente Moodle ${emailStr}. Si procederà con un tentativo di creazione. Errore: ${e.message}`);
+                }
+
+                const baseParams = new URLSearchParams();
+                if (isUpdate) {
+                    baseParams.append('users[0][id]', moodleUserId);
+                } else {
+                    baseParams.append('users[0][username]', emailStr);
+                    baseParams.append('users[0][password]', moodlePassword);
+                    baseParams.append('users[0][email]', emailStr);
+                    if (user.cf && user.cf !== 'N/D') {
+                        baseParams.append('users[0][idnumber]', user.cf.toUpperCase().trim());
+                    }
+                }
+                baseParams.append('users[0][firstname]', fname);
+                baseParams.append('users[0][lastname]', lname);
+                if (user.sede) baseParams.append('users[0][department]', user.sede);
+                baseParams.append('users[0][city]', city);
+                if (user.telefono) baseParams.append('users[0][phone1]', phone);
+
+                const paramsWithCustom = new URLSearchParams(baseParams.toString());
+                let cfIdx = 0;
+                paramsWithCustom.append(`users[0][customfields][${cfIdx}][type]`, 'appartenenza');
+                paramsWithCustom.append(`users[0][customfields][${cfIdx}][value]`, 'Gruppo Lucano');
+                cfIdx++;
+                paramsWithCustom.append(`users[0][customfields][${cfIdx}][type]`, 'cf');
+                paramsWithCustom.append(`users[0][customfields][${cfIdx}][value]`, user.cf || 'N/D');
+                cfIdx++;
+                paramsWithCustom.append(`users[0][customfields][${cfIdx}][type]`, 'luogo');
+                paramsWithCustom.append(`users[0][customfields][${cfIdx}][value]`, user.luogoNascita || 'N/D');
+                cfIdx++;
+                paramsWithCustom.append(`users[0][customfields][${cfIdx}][type]`, 'datanascita');
+                paramsWithCustom.append(`users[0][customfields][${cfIdx}][value]`, user.dataNascita || '01/01/1970');
+                cfIdx++;
+                paramsWithCustom.append(`users[0][customfields][${cfIdx}][type]`, 'indirizzoemail');
+                paramsWithCustom.append(`users[0][customfields][${cfIdx}][value]`, emailStr);
+                cfIdx++;
+                paramsWithCustom.append(`users[0][customfields][${cfIdx}][type]`, 'cellulare');
+                paramsWithCustom.append(`users[0][customfields][${cfIdx}][value]`, phone);
+                cfIdx++;
+
+                const action = isUpdate ? 'core_user_update_users' : 'core_user_create_users';
+                const actionEndpoint = `${MOODLE_URL}/webservice/rest/server.php?wstoken=${MOODLE_TOKEN}&wsfunction=${action}&moodlewsrestformat=json`;
+
+                try {
+                    let res = await fetch(actionEndpoint, { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: paramsWithCustom.toString() });
+                    let data = await res.json().catch(async () => ({ exception: 'non-json', message: await res.text() }));
+
+                    // Se fallisce per parametri invalidi (spesso i campi custom), ritenta con i dati base
+                    if (data && data.exception && (data.errorcode === 'invalidparameter' || data.exception.includes('invalid_parameter_exception'))) {
+                        logger.warn(`Operazione Moodle per ${emailStr} fallita con campi custom. Ritento con dati base...`);
+                        res = await fetch(actionEndpoint, { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: baseParams.toString() });
+                        data = await res.json().catch(async () => ({ exception: 'non-json', message: await res.text() }));
+                    }
+
+                    // Controllo finale degli errori
+                    if (data && data.exception) {
+                        // "nothingtoupdate" non è un errore, ma un successo funzionale.
+                        if (data.errorcode === 'nothingtoupdate') {
+                             successCount++;
+                        } else {
+                            throw new Error(data.message || data.debuginfo || JSON.stringify(data));
+                        }
+                    } else {
+                        successCount++;
+                    }
+                } catch (e) {
+                    errorCount++;
+                    errorList.push(`${emailStr}: Eccezione Fetch -> ${e.message}`);
+                }
+            }));
+        }
+
+        const formattedError = errorList.length > 0 ? errorList.slice(0, 3).join(' | ') : null;
+        response.status(200).json({ success: true, processed: users.length, synced: successCount, failedOrSkipped: errorCount, error: formattedError });
+    } catch (error) {
+        logger.error("Errore syncExistingUsersToMoodle:", error);
+        response.status(500).json({ error: error.message });
+    }
+});
+
+/**
+ * TRIGGER: Notifica automatica per ogni messaggio in bacheca modulo
+ * Garantisce che ogni post (testo, sondaggio o form) invii una notifica ai membri.
+ */
+exports.onModuleChatMessageCreated = onDocumentCreated("moduli/{moduleId}/chat/{msgId}", async (event) => {
+    const msgData = event.data.data();
+    const moduleId = event.params.moduleId;
+
+    try {
+        const moduleDoc = await admin.firestore().collection('moduli').doc(moduleId).get();
+        if (!moduleDoc.exists) return;
+        const moduleData = moduleDoc.data();
+        const members = moduleData.membri || [];
+
+        if (members.length === 0) return;
+
+        const tokens = [];
+        const chunkSize = 10;
+        for (let i = 0; i < members.length; i += chunkSize) {
+            const chunk = members.slice(i, i + chunkSize);
+            const q = await admin.firestore().collection('users').where(admin.firestore.FieldPath.documentId(), 'in', chunk).get();
+            q.docs.forEach(doc => {
+                const d = doc.data();
+                // Notifica tutti tranne l'autore (se identificato)
+                if (d.fcmToken && doc.id !== msgData.uid) tokens.push(d.fcmToken);
+            });
+        }
+
+        if (tokens.length > 0) {
+            let body = msgData.text || "Nuovo contenuto disponibile in bacheca";
+            let type = 'module_chat';
+            if (msgData.tipo === 'form') body = "📊 Nuovo sondaggio interno pubblicato";
+            if (msgData.tipo === 'link_form') body = "📝 Nuovo modulo HQ da compilare";
+
+            await admin.messaging().sendEachForMulticast({
+                notification: {
+                    title: `Bacheca: ${moduleData.nome}`,
+                    body: body,
+                    image: LOGO_URL
+                },
+                data: {
+                    type: type,
+                    moduleId: moduleId
+                },
+                tokens: tokens
+            });
+        }
+    } catch (error) {
+        logger.error("Errore notifica bacheca modulo:", error);
+    }
+});
+
+/**
+ * CRON JOB: Sincronizzazione automatica completamento corsi Moodle
+ * Controlla ogni 4 ore se gli utenti hanno terminato dei corsi e assegna il badge.
+ */
+exports.syncMoodleCompletions = onSchedule({ schedule: "every 4 hours", timeZone: "Europe/Rome" }, async (event) => {
+    const db = admin.firestore();
+    const MOODLE_URL = "https://formazione.pcgl.it";
+    const MOODLE_TOKEN = process.env.MOODLE_ADMIN_TOKEN; // Token con permessi di lettura report
+
+    try {
+        const usersSnapshot = await db.collection('users').where('stato', '==', 'attivo').get();
+        logger.info(`Avvio sync completamento Moodle per ${usersSnapshot.size} utenti.`);
+
+        for (const userDoc of usersSnapshot.docs) {
+            const userData = userDoc.data();
+            if (!userData.email) continue;
+
+            try {
+                // 1. Trova ID Moodle
+                const userRes = await fetch(`${MOODLE_URL}/webservice/rest/server.php?wstoken=${MOODLE_TOKEN}&wsfunction=core_user_get_users_by_field&field=email&values[0]=${encodeURIComponent(userData.email.toLowerCase())}&moodlewsrestformat=json`);
+                const moodleUsers = await userRes.json();
+
+                if (Array.isArray(moodleUsers) && moodleUsers.length > 0) {
+                    const moodleId = moodleUsers[0].id;
+
+                    // 2. Prendi corsi e progresso
+                    const coursesRes = await fetch(`${MOODLE_URL}/webservice/rest/server.php?wstoken=${MOODLE_TOKEN}&wsfunction=core_enrol_get_users_courses&userid=${moodleId}&moodlewsrestformat=json`);
+                    const courses = await coursesRes.json();
+
+                    if (Array.isArray(courses)) {
+                        const completions = courses.filter(c => c.progress === 100 || c.completed === true);
+                        
+                        if (completions.length > 0) {
+                            const currentFascicolo = userData.fascicoloCorsi || [];
+                            let updated = false;
+
+                            for (const course of completions) {
+                                const alreadyPresent = currentFascicolo.some(f => f.titolo === course.fullname || f.moodleId === course.id);
+                                
+                                if (!alreadyPresent) {
+                                    currentFascicolo.push({
+                                        titolo: course.fullname.toUpperCase(),
+                                        data: new Date().toISOString(),
+                                        certificato: true,
+                                        tipo: 'moodle',
+                                        moodleId: course.id
+                                    });
+                                    updated = true;
+                                    logger.info(`Nuovo badge assegnato a ${userData.email}: ${course.fullname}`);
+                                }
+                            }
+
+                            if (updated) {
+                                await userDoc.ref.update({ fascicoloCorsi: currentFascicolo });
+                                
+                                // Notifica l'utente del nuovo badge
+                                if (userData.fcmToken) {
+                                    await admin.messaging().send({
+                                        notification: {
+                                            title: "Nuovo Badge Formativo! 🏆",
+                                            body: `Hai completato con successo un corso su Moodle. Il badge è stato aggiunto al tuo profilo.`,
+                                            image: LOGO_URL
+                                        },
+                                        token: userData.fcmToken
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
+            } catch (err) {
+                logger.error(`Errore sync Moodle per utente ${userData.email}:`, err);
+            }
+            
+            // Delay minimo per non sovraccaricare le API Moodle in caso di molti utenti
+            await new Promise(r => setTimeout(r, 200));
+        }
+    } catch (error) {
+        logger.error("Errore generale syncMoodleCompletions:", error);
+    }
+});
+
+/**
+ * TRIGGER: Nuovo Documento nel Progetto (Area Tematica)
+ * Notifica i membri delle sedi abilitate quando viene caricato un nuovo documento.
+ */
+exports.onAreaDocumentAdded = onDocumentUpdated("aree_tematiche/{areaId}", async (event) => {
+    const before = event.data.before.data();
+    const after = event.data.after.data();
+
+    const oldDocs = before.documenti || [];
+    const newDocs = after.documenti || [];
+
+    if (newDocs.length > oldDocs.length) {
+        const addedDoc = newDocs.find(d => !oldDocs.some(od => od.url === d.url));
+        
+        if (addedDoc) {
+            const areaName = after.titolo;
+            const sediAbilitate = after.sediAbilitate || [];
+            const utentiAbilitati = after.utentiAbilitati || [];
+            
+            if (sediAbilitate.length === 0 && utentiAbilitati.length === 0) return;
+
+            // Recupera utenti delle sedi abilitate o admin/superadmin/coordinamento
+            const usersSnapshot = await admin.firestore().collection('users').where('stato', '==', 'attivo').get();
+
+            const tokens = [];
+            usersSnapshot.forEach(doc => {
+                const u = doc.data();
+                if (u.fcmToken) {
+                    const isGlobalAdmin = ['admin', 'superadmin', 'coordinamento'].includes(u.ruolo);
+                    const isSedeAbilitata = sediAbilitate.includes(u.sede);
+                    const isUtenteAbilitato = utentiAbilitati.includes(doc.id);
+                    // Non notificare chi ha caricato il file
+                    const isAuthor = addedDoc.autore === `${u.nome} ${u.cognome}`;
+                    if ((isGlobalAdmin || isSedeAbilitata || isUtenteAbilitato) && !isAuthor) {
+                        tokens.push(u.fcmToken);
+                    }
+                }
+            });
+
+            if (tokens.length > 0) {
+                const uniqueTokens = [...new Set(tokens)];
+                const chunkSize = 500;
+                for (let i = 0; i < uniqueTokens.length; i += chunkSize) {
+                    const chunk = uniqueTokens.slice(i, i + chunkSize);
+                    await admin.messaging().sendEachForMulticast({
+                        notification: { title: `Nuovo Documento in ${areaName}`, body: `${addedDoc.autore} ha caricato: ${addedDoc.nome}`, image: LOGO_URL },
+                        data: { type: 'area_tematica', areaId: event.params.areaId },
+                        tokens: chunk
+                    });
+                }
+            }
+        }
+    }
+});
+
+/**
+ * TRIGGER: Nuovo Messaggio nel Progetto (Area Tematica)
+ * Notifica i membri delle sedi abilitate.
+ */
+exports.onAreaMessageCreated = onDocumentCreated("aree_tematiche/{areaId}/chat/{messageId}", async (event) => {
+    const snapshot = event.data;
+    if (!snapshot) return;
+
+    const msgData = snapshot.data();
+    const areaId = event.params.areaId;
+
+    try {
+        const areaDoc = await admin.firestore().collection('aree_tematiche').doc(areaId).get();
+        if (!areaDoc.exists) return;
+
+        const areaData = areaDoc.data();
+        const sediAbilitate = areaData.sediAbilitate || [];
+        const utentiAbilitati = areaData.utentiAbilitati || [];
+        if (sediAbilitate.length === 0 && utentiAbilitati.length === 0) return;
+
+        const usersSnapshot = await admin.firestore().collection('users').where('stato', '==', 'attivo').get();
+        const tokens = [];
+        
+        usersSnapshot.forEach(doc => {
+            const u = doc.data();
+            if (u.fcmToken) {
+                const isGlobalAdmin = ['admin', 'superadmin', 'coordinamento'].includes(u.ruolo);
+                const isSedeAbilitata = sediAbilitate.includes(u.sede);
+                const isUtenteAbilitato = utentiAbilitati.includes(doc.id);
+                const isAuthor = msgData.uid === doc.id;
+                if ((isGlobalAdmin || isSedeAbilitata || isUtenteAbilitato) && !isAuthor) { tokens.push(u.fcmToken); }
+            }
+        });
+
+        if (tokens.length > 0) {
+            const uniqueTokens = [...new Set(tokens)];
+            const chunkSize = 500;
+            const isMeeting = msgData.tipo === 'riunione';
+            const notifTitle = isMeeting ? `📢 Riunione: ${areaData.titolo}` : `Nuovo Messaggio in ${areaData.titolo}`;
+            
+            for (let i = 0; i < uniqueTokens.length; i += chunkSize) {
+                const chunk = uniqueTokens.slice(i, i + chunkSize);
+                await admin.messaging().sendEachForMulticast({
+                    notification: { title: notifTitle, body: `${msgData.autore}: ${msgData.testo.length > 50 ? msgData.testo.substring(0, 50) + '...' : msgData.testo}`, image: LOGO_URL },
+                    data: { type: 'area_tematica', areaId: areaId },
+                    tokens: chunk
+                });
+            }
+        }
+    } catch (error) { logger.error("Errore onAreaMessageCreated:", error); }
+});
+
+/**
+ * ONREQUEST: Genera un link temporaneo per collegare l'account Telegram
+ */
+exports.generateTelegramLink = onRequest({ region: "europe-west1" }, async (request, response) => {
+    cors(request, response, async () => {
+        try {
+            const idToken = request.headers.authorization?.split('Bearer ')[1];
+            if (!idToken) { response.status(401).json({ error: 'Unauthorized' }); return; }
+            
+            const decodedToken = await admin.auth().verifyIdToken(idToken);
+            const uid = decodedToken.uid;
+            
+            // Genera token criptograficamente sicuro (6 caratteri base16)
+            const linkToken = crypto.randomBytes(3).toString('hex').toUpperCase();
+            
+            await admin.firestore().collection('telegram_links').doc(linkToken).set({
+                uid: uid,
+                createdAt: admin.firestore.FieldValue.serverTimestamp()
+            });
+            
+            response.status(200).json({ linkToken });
+        } catch (error) {
+            logger.error("Errore generateTelegramLink:", error);
+            response.status(500).json({ error: error.message });
+        }
+    });
+});
+
+/**
+ * ONREQUEST: Webhook Telegram per ricevere messaggi dal Bot
+ */
+exports.telegramWebhook = onRequest({ region: "europe-west1" }, async (request, response) => {
+    // 1. Sicurezza: Verifica che la richiesta provenga realmente dai server di Telegram
+    if (request.headers['x-telegram-bot-api-secret-token'] !== TELEGRAM_SECRET_TOKEN) {
+        logger.warn("Tentativo di accesso non autorizzato al Webhook Telegram. Secret token mancante o errato.");
+        response.status(403).send("Forbidden");
+        return;
+    }
+
+    logger.info("Webhook Telegram Ricevuto:", request.body ? JSON.stringify(request.body) : "Nessun Body");
+
+    const message = request.body.message;
+    if (!message) { response.status(200).send("OK"); return; }
+
+    const chatId = message.chat.id;
+    // Se inviano una foto senza testo, usa la didascalia se presente, altrimenti stringa vuota
+    const text = message.text ? message.text.trim() : (message.caption ? message.caption.trim() : '');
+
+    try {
+        // 2b. Nuova gestione per l'upload di file e foto da parte del volontario
+        if (message.photo || message.document) {
+            const userSnap = await admin.firestore().collection('users').where('telegramChatId', '==', chatId.toString()).get();
+            if (userSnap.empty) {
+                await sendTelegramMessage(chatId, "❌ Il tuo account non è collegato all'app. Collegalo tramite l'app PCGL per inviare file.");
+                response.status(200).send("OK");
+                return;
+            }
+            const userDoc = userSnap.docs[0];
+            const u = userDoc.data();
+            const uid = userDoc.id;
+
+            let fileId, fileName, mimeType, type;
+            if (message.photo) {
+                const photo = message.photo[message.photo.length - 1]; // Prende la risoluzione massima fornita da TG
+                fileId = photo.file_id;
+                fileName = `photo_${Date.now()}.jpg`;
+                mimeType = 'image/jpeg';
+                type = 'photo';
+            } else {
+                fileId = message.document.file_id;
+                fileName = message.document.file_name || `doc_${Date.now()}`;
+                mimeType = message.document.mime_type || 'application/octet-stream';
+                type = 'document';
+            }
+
+            const caption = message.caption || '';
+            
+            const fileRes = await fetch(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/getFile?file_id=${fileId}`);
+            const fileData = await fileRes.json();
+            
+            if (fileData.ok) {
+                const filePath = fileData.result.file_path;
+                const downloadUrl = `https://api.telegram.org/file/bot${TELEGRAM_BOT_TOKEN}/${filePath}`;
+                
+                const fileBufferRes = await fetch(downloadUrl);
+                const buffer = await fileBufferRes.arrayBuffer();
+                
+                const bucket = admin.storage().bucket("pcgl-volontari.firebasestorage.app");
+                const storagePath = `telegram_uploads/${uid}/${fileName}`;
+                const file = bucket.file(storagePath);
+                const token = crypto.randomUUID();
+                
+                await file.save(Buffer.from(buffer), { metadata: { contentType: mimeType, metadata: { firebaseStorageDownloadTokens: token } } });
+                const firebaseUrl = `https://firebasestorage.googleapis.com/v0/b/${bucket.name}/o/${encodeURIComponent(storagePath)}?alt=media&token=${token}`;
+                
+                await admin.firestore().collection('telegram_uploads').add({
+                    uid: uid, userName: `${u.nome} ${u.cognome}`, userSede: u.sede,
+                    type: type, url: firebaseUrl, caption: caption, timestamp: new Date().toISOString()
+                });
+                
+                await sendTelegramMessage(chatId, `✅ <b>${type === 'photo' ? 'Foto' : 'Documento'} acquisito.</b>\nÈ stato inserito nella coda della Sala Operativa.`);
+
+                // --- INIZIO: NOTIFICA PUSH PER ADMIN/PRESIDENTI ---
+                try {
+                    const staffSnapshot = await admin.firestore().collection('users')
+                        .where('stato', '==', 'attivo')
+                        .where('ruolo', 'in', ['admin', 'superadmin', 'coordinamento', 'presidente'])
+                        .get();
+                    
+                    const tokens = [];
+                    staffSnapshot.forEach(doc => {
+                        const staff = doc.data();
+                        if (staff.fcmToken) {
+                            // Notifica il coordinamento globale O il presidente della sede del volontario
+                            if (['admin', 'superadmin', 'coordinamento'].includes(staff.ruolo) || staff.sede === u.sede) {
+                                tokens.push(staff.fcmToken);
+                            }
+                        }
+                    });
+
+                    if (tokens.length > 0) {
+                        await admin.messaging().sendEachForMulticast({
+                            notification: {
+                                title: "Sala Operativa",
+                                body: `Ricevuto nuovo file da ${u.nome} ${u.cognome} (${u.sede}) via Telegram.`,
+                                image: type === 'photo' ? firebaseUrl : LOGO_URL
+                            },
+                            tokens: [...new Set(tokens)]
+                        });
+                    }
+                } catch (pushErr) {
+                    logger.error("Errore invio notifica push file Telegram:", pushErr);
+                }
+                // --- FINE NOTIFICA PUSH ---
+            } else {
+                await sendTelegramMessage(chatId, "❌ Errore durante l'acquisizione del file da Telegram.");
+            }
+            
+            response.status(200).send("OK");
+            return;
+        }
+
+        // Gestione Link /start 
+        if (text.startsWith('/start')) {
+            const parts = text.split(' ');
+            
+            // L'utente ha usato il link completo dall'app (es. /start ABCDEF)
+            if (parts.length > 1) {
+                const token = parts[1];
+                const linkDocRef = admin.firestore().collection('telegram_links').doc(token);
+                const linkDoc = await linkDocRef.get();
+                
+                if (linkDoc.exists) {
+                    const linkData = linkDoc.data();
+                    const createdAt = linkData.createdAt ? linkData.createdAt.toDate() : new Date();
+                    const diffMinutes = (new Date() - createdAt) / 60000; // Differenza in minuti
+
+                    // 2. Sicurezza: Limita la finestra di collegamento a 15 minuti per prevenire attacchi differiti
+                    if (diffMinutes > 15) {
+                        await linkDocRef.delete();
+                        await sendTelegramMessage(chatId, "❌ Link di collegamento scaduto (valido 15 min). Generane uno nuovo dall'app.");
+                    } else {
+                        const uid = linkData.uid;
+                        await admin.firestore().collection('users').doc(uid).update({
+                            telegramChatId: chatId.toString()
+                        });
+                        await linkDocRef.delete();
+                        await sendTelegramMessage(chatId, "✅ <b>Account collegato con successo!</b>\nOra riceverai qui le tue notifiche operative.");
+                    }
+                } else {
+                    await sendTelegramMessage(chatId, "❌ Link di collegamento non valido o scaduto. Riprova dall'app.");
+                }
+            } else {
+                // L'utente ha avviato il bot manualmente o il parametro si è perso
+                await sendTelegramMessage(chatId, "👋 <b>Benvenuto nel Bot PCGL!</b>\n\n⚠️ <i>Sembra che tu abbia avviato il bot manualmente.</i>\n\nPer collegare correttamente il tuo account, apri l'app PCGL, vai nella sezione <b>Il Mio Profilo</b> e clicca sul pulsante <b>Collega Account</b>.");
+            }
+        } else if (text === '/stato') {
+            await sendTelegramMessage(chatId, "Il tuo account è operativo e collegato al sistema PCGL.");
+        } else if (text === '/profilo') {
+            const userSnap = await admin.firestore().collection('users').where('telegramChatId', '==', chatId.toString()).get();
+            if (!userSnap.empty) {
+                const u = userSnap.docs[0].data();
+                const t = `👤 <b>IL TUO PROFILO PCGL</b>\n\n<b>Nome:</b> ${u.nome} ${u.cognome}\n<b>Sede:</b> ${u.sede}\n<b>Ruolo:</b> ${u.ruolo.toUpperCase()}\n<b>Stato:</b> ${u.stato === 'attivo' ? '🟢 Operativo' : '🔴 Sospeso/Inattivo'}\n<b>N. Tessera:</b> <code>${u.numeroTessera || 'N/D'}</code>\n\n💡 <i>Per modificare i dati, accedi all'App.</i>`;
+                const replyMarkup = { inline_keyboard: [[{ text: "📲 Apri App PCGL", url: "https://pcgl-volontari.web.app/" }]] };
+                await sendTelegramMessage(chatId, t, replyMarkup);
+            } else {
+                await sendTelegramMessage(chatId, "❌ Il tuo account Telegram non è associato a nessun volontario.\n\nPer collegarlo, entra nell'app PCGL -> Il Mio Profilo -> Collega Account Telegram.");
+            }
+        } else if (text === '/aiuto' || text === '/help') {
+            const helpText = `🆘 <b>Comandi Bot PCGL</b>\n\n🔹 /profilo - Visualizza i tuoi dati e qualifica\n🔹 /stato - Verifica lo stato di ricezione allerte\n🔹 /aiuto - Mostra questo messaggio\n\nIl bot ti avviserà in automatico in caso di Allerta Operativa, senza bisogno di scrivere nulla.`;
+            await sendTelegramMessage(chatId, helpText);
+        } else {
+            // Risposta predefinita
+            await sendTelegramMessage(chatId, "Comando non riconosciuto. Digita /aiuto per vedere le opzioni disponibili.");
+        }
+    } catch (error) { logger.error("Telegram Webhook Error:", error); }
+
+    response.status(200).send("OK");
+});
+
+/**
+ * ONCALL: Invia messaggio personalizzato al Canale Telegram
+ */
+exports.sendCustomTelegramMessage = onCall({ region: "europe-west1", cors: true }, async (request) => {
+    if (!request.auth) {
+        throw new HttpsError('unauthenticated', 'Devi essere autenticato.');
+    }
+
+    const callerUid = request.auth.uid;
+    const callerDoc = await admin.firestore().collection('users').doc(callerUid).get();
+    const callerData = callerDoc.data();
+
+    // Solo admin, superadmin e coordinamento possono inviare messaggi personalizzati al canale
+    if (!['admin', 'superadmin', 'coordinamento'].includes(callerData.ruolo)) {
+        throw new HttpsError('permission-denied', 'Non hai i permessi per questa operazione.');
+    }
+
+    const { text, buttonText, buttonUrl } = request.data;
+    if (!text) {
+        throw new HttpsError('invalid-argument', 'Testo mancante.');
+    }
+
+    try {
+        let replyMarkup = null;
+        // Se sono stati forniti dati per il bottone, genera l'Inline Keyboard
+        if (buttonText && buttonUrl) {
+            replyMarkup = { inline_keyboard: [[{ text: buttonText, url: buttonUrl }]] };
+        }
+        
+        await sendTelegramMessage(TELEGRAM_CHANNEL_ID, text, replyMarkup);
+        
+        // Logga l'azione
+        await admin.firestore().collection('logs').add({
+            azione: "INVIO_TELEGRAM",
+            dettagli: `Messaggio personalizzato inviato al canale Telegram.`,
+            autore: `${callerData.nome} ${callerData.cognome}`,
+            data: new Date().toISOString()
+        });
+
+        return { success: true };
+    } catch (error) {
+        logger.error("Errore sendCustomTelegramMessage:", error);
+        throw new HttpsError('internal', `Errore Telegram: ${error.message}`);
+    }
+});
+
+/**
+ * ONCALL: Verifica lo stato e i permessi del Bot nel canale Telegram
+ */
+exports.verifyTelegramConnection = onCall({ region: "europe-west1", cors: true }, async (request) => {
+    if (!request.auth) {
+        throw new HttpsError('unauthenticated', 'Devi essere autenticato.');
+    }
+
+    const callerUid = request.auth.uid;
+    const callerDoc = await admin.firestore().collection('users').doc(callerUid).get();
+    const callerData = callerDoc.data();
+
+    if (!['admin', 'superadmin', 'coordinamento'].includes(callerData.ruolo)) {
+        throw new HttpsError('permission-denied', 'Non hai i permessi.');
+    }
+
+    try {
+        // 1. getChat per vedere se il bot "vede" il canale
+        const chatRes = await fetch(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/getChat?chat_id=${TELEGRAM_CHANNEL_ID}`).then(r => r.json());
+        if (!chatRes.ok) return { success: false, error: `Canale non trovato o bot non presente: ${chatRes.description}` };
+
+        // 2. getChatMember per controllare permessi e ruolo
+        const botId = TELEGRAM_BOT_TOKEN.split(':')[0];
+        const memberRes = await fetch(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/getChatMember?chat_id=${TELEGRAM_CHANNEL_ID}&user_id=${botId}`).then(r => r.json());
+        
+        if (!memberRes.ok) return { success: false, error: `Errore verifica permessi: ${memberRes.description}` };
+
+        const status = memberRes.result.status;
+        const canPost = memberRes.result.can_post_messages;
+
+        if (status !== 'administrator' && status !== 'creator') {
+            return { success: false, error: `Il bot è nel canale ma non è Amministratore (stato attuale: "${status}").` };
+        }
+
+        if (canPost === false) {
+            return { success: false, error: `Il bot è Amministratore ma NON ha il permesso di "Pubblicare Messaggi".` };
+        }
+
+        return { 
+            success: true, 
+            channelTitle: chatRes.result.title,
+            botStatus: status,
+            permissions: memberRes.result
+        };
+    } catch (error) {
+        logger.error("Errore verifica Telegram:", error);
+        return { success: false, error: error.message };
+    }
+});
+
+/**
+ * CRON JOB: Promemoria Turni Programmati (Ogni giorno alle 18:00)
+ * Avvisa i volontari che hanno un turno programmato per il giorno successivo.
+ */
+exports.shiftReminderCron = onSchedule({ schedule: "every day 18:00", timeZone: "Europe/Rome" }, async (event) => {
+    const db = admin.firestore();
+    const now = new Date();
+    // Data di domani (es. 2026-06-08)
+    const tomorrow = new Date(now.getTime() + 24 * 60 * 60 * 1000);
+    const tomorrowStr = tomorrow.toISOString().split('T')[0];
+
+    try {
+        const shiftsSnapshot = await db.collection('turni_programmati').where('data', '==', tomorrowStr).get();
+        const notificationsMap = {}; // uid -> string array
+
+        shiftsSnapshot.forEach(doc => {
+            const shift = doc.data();
+            if (Array.isArray(shift.slots)) {
+                shift.slots.forEach(slot => {
+                    if (Array.isArray(slot.iscritti)) {
+                        slot.iscritti.forEach(uid => {
+                            if (!notificationsMap[uid]) notificationsMap[uid] = [];
+                            notificationsMap[uid].push(`${shift.titolo} (${slot.oraInizio}-${slot.oraFine})`);
+                        });
+                    }
+                });
+            }
+        });
+
+        for (const [uid, messages] of Object.entries(notificationsMap)) {
+            const userDoc = await db.collection('users').doc(uid).get();
+            if (userDoc.exists && userDoc.data().fcmToken) {
+                await admin.messaging().send({
+                    notification: { title: "⏰ Promemoria Turno Operativo", body: `Domani hai un turno: ${messages.join(', ')}. Verifica sull'app!`, image: LOGO_URL },
+                    token: userDoc.data().fcmToken
+                });
+            }
+        }
+    } catch (e) { logger.error("Errore shiftReminderCron:", e); }
+});
+
+/**
+ * TRIGGER: AIB Intervention Notification (Push FCM & Telegram)
+ */
+exports.onAibInterventionUpdated = onDocumentUpdated("aib_interventi/{aibId}", async (event) => {
+    const before = event.data.before.data();
+    const after = event.data.after.data();
+    const messages = [];
+    const escapeHtml = (text) => (text || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+    if (before.stato !== after.stato) {
+        messages.push(`🔥 <b>AGGIORNAMENTO AIB</b>\n\nIntervento: ${escapeHtml(after.comune)} - ${escapeHtml(after.localita)}\nNuovo Stato: <b>${after.stato.toUpperCase().replace('_', ' ')}</b>\nAggiornato da: ${after.autore}`);
+    }
+
+    const beforeFotos = before.foto || [];
+    const afterFotos = after.foto || [];
+    if (afterFotos.length > beforeFotos.length) {
+        const newFoto = afterFotos[afterFotos.length - 1];
+        messages.push(`📸 <b>NUOVA FOTO AIB</b>\n\nIntervento: ${escapeHtml(after.comune)} - ${escapeHtml(after.localita)}\nCaricata da: ${newFoto.autore}\n<a href="${newFoto.url}">Vedi Foto</a>`);
+    }
+
+    const beforeSediSupporto = before.sediSupporto || [];
+    const afterSediSupporto = after.sediSupporto || [];
+    if (afterSediSupporto.length > beforeSediSupporto.length) {
+        const newSedi = afterSediSupporto.filter(s => !beforeSediSupporto.includes(s));
+        messages.push(`🤝 <b>SUPPORTO AIB RICHIESTO</b>\n\nIntervento: ${escapeHtml(after.comune)} - ${escapeHtml(after.localita)}\nSede attivata in supporto: <b>${newSedi.join(', ')}</b>`);
+    }
+
+    if (messages.length === 0) return;
+    try {
+        const usersSnap = await admin.firestore().collection('users').where('telegramChatId', '!=', null).get();
+        const chatIds = new Set();
+        usersSnap.forEach(doc => {
+            const user = doc.data();
+            const isSoOrAdmin = ['admin', 'superadmin', 'coordinamento'].includes(user.ruolo);
+            const isPresidenteSede = user.ruolo === 'presidente' && (user.sede === after.sedeRichiedente || afterSediSupporto.includes(user.sede));
+            const isInSquadra = after.squadra && after.squadra.some(v => v.id === doc.id);
+            if (isSoOrAdmin || isPresidenteSede || isInSquadra) chatIds.add(user.telegramChatId);
+        });
+        const replyMarkup = { inline_keyboard: [[{ text: "🔥 Apri Campagna AIB", url: "https://pcgl-volontari.web.app/" }]] };
+        for (const chatId of chatIds) {
+            for (const text of messages) await sendTelegramMessage(chatId, text, replyMarkup).catch(() => {});
+        }
+    } catch (e) { logger.error("Errore onAibInterventionUpdated Telegram:", e); }
+});
+
+exports.onAibInterventionCreated = onDocumentCreated("aib_interventi/{aibId}", async (event) => {
+    const data = event.data.data();
+    if (!data) return;
+    const escapeHtml = (text) => (text || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    const text = `🔥 <b>NUOVA SEGNALAZIONE AIB</b>\n\nComune: ${escapeHtml(data.comune)}\nLocalità: ${escapeHtml(data.localita)}\nSegnalato da: ${escapeHtml(data.sedeRichiedente)} tramite ${escapeHtml(data.fonteSegnalazione)}`;
+    try {
+        const usersSnap = await admin.firestore().collection('users').where('telegramChatId', '!=', null).get();
+        const allActiveUsers = await admin.firestore().collection('users').where('stato', '==', 'attivo').get();
+
+        const chatIds = new Set();
+        const fcmTokens = new Set();
+
+        usersSnap.forEach(doc => {
+            const user = doc.data();
+            const isSoOrAdmin = ['admin', 'superadmin', 'coordinamento'].includes(user.ruolo);
+            const isPresidenteSede = user.ruolo === 'presidente' && user.sede === data.sedeRichiedente;
+            if (isSoOrAdmin || isPresidenteSede) chatIds.add(user.telegramChatId);
+        });
+
+        allActiveUsers.forEach(doc => {
+            const user = doc.data();
+            if(!user.fcmToken) return;
+            const isGlobalStaff = ['admin', 'superadmin', 'coordinamento'].includes(user.ruolo);
+            const isLocalVolunteer = user.sede === data.sedeRichiedente || (data.sediSupporto || []).includes(user.sede);
+            if (isGlobalStaff || isLocalVolunteer) fcmTokens.add(user.fcmToken);
+        });
+
+        const replyMarkup = { inline_keyboard: [[{ text: "🔥 Apri Campagna AIB", url: "https://pcgl-volontari.web.app/" }]] };
+        for (const chatId of chatIds) await sendTelegramMessage(chatId, text, replyMarkup).catch(() => {});
+        
+        if (fcmTokens.size > 0) {
+             await admin.messaging().sendEachForMulticast({
+                notification: { title: "🔥 NUOVO INCENDIO AIB", body: `${data.comune} (${data.localita}) - Avvia l'app per i dettagli.`, image: "https://pcgl-volontari.web.app/logo.png" },
+                tokens: [...fcmTokens]
+            });
+        }
+    } catch (e) { logger.error("Errore onAibInterventionCreated Telegram:", e); }
 });

@@ -34,6 +34,11 @@ service firebase.storage {
       return getUserData().ruolo == 'presidente';
     }
 
+    // Verifica se l'utente possiede uno specifico ruolo
+    function hasRole(role) {
+      return getUserData().ruolo == role;
+    }
+
     // --- REGOLE PER I PERCORSI ---
 
     // 1. FOTO PROFILO (Max 5MB, Solo Immagini, Solo proprietario)
@@ -46,10 +51,10 @@ service firebase.storage {
     // 2. DOCUMENTI MODULI (Max 10MB)
     match /module_docs/{moduleId}/{fileName} {
       function isModuleMember() {
-        return request.auth.uid in get(/databases/(default)/documents/moduli/$(moduleId)).data.membri;
+        return request.auth.uid in firestore.get(/databases/(default)/documents/moduli/$(moduleId)).data.membri;
       }
       function canUploadToModule() {
-        let module = get(/databases/(default)/documents/moduli/$(moduleId)).data;
+        let module = firestore.get(/databases/(default)/documents/moduli/$(moduleId)).data;
         return module.adminId == request.auth.uid || (module.allowMemberUploads && isModuleMember());
       }
       allow read: if isSignedIn() && (isModuleMember() || hasRole('coordinamento'));
@@ -67,7 +72,7 @@ service firebase.storage {
 
     // 4. DOCUMENTI SEDE (Max 10MB)
     match /documenti_sede/{sede}/{fileName} {
-      allow read: if isSignedIn() && (isStaff() || getUserData().sede == sede);
+      allow read: if isSignedIn() && (isStaff() || sede == 'TUTTE' || getUserData().sede == sede);
       allow write: if isSignedIn() && isValidSize(10) && (isStaff() || (isPresidente() && getUserData().sede == sede));
     }
 
@@ -83,6 +88,24 @@ service firebase.storage {
       allow write: if isSignedIn() && request.auth.uid == userId && isImage() && isValidSize(5);
     }
     
+    // 7. ALLEGATI MODULI DATI (Max 10MB)
+    match /form_attachments/{formId}/{userId}/{fileName} {
+      allow read: if isSignedIn(); // Chi ha il link (dalla risposta) può vedere il file
+      allow write: if isSignedIn() && request.auth.uid == userId && isValidSize(10);
+    }
+    
+    // 8. ALLEGATI CANDIDATURE MODULI OPERATIVI (Max 10MB)
+    match /application_attachments/{moduleId}/{userId}/{fileName} {
+      allow read: if isSignedIn(); // Chi ha il link (Admin) può vedere il file
+      allow write: if isSignedIn() && request.auth.uid == userId && isValidSize(10);
+    }
+    
+    // 9. ALLEGATI SONDAGGI INTERNI MODULI (Max 10MB)
+    match /module_form_attachments/{formId}/{userId}/{fileName} {
+      allow read: if isSignedIn();
+      allow write: if isSignedIn() && request.auth.uid == userId && isValidSize(10);
+    }
+
     // Blocca tutto il resto (Sicurezza Default per evitare l'avviso via mail)
     match /{allPaths=**} {
       allow read, write: if false;

@@ -105,7 +105,7 @@ service cloud.firestore {
     // --- 2. SEZIONE NEWS (PUBBLICITÀ ISTITUZIONALE) ---
     // ==========================================================================
 
-    match /news/{document=**} {
+    match /news/{newsId} {
       /**
        * RISOLUZIONE ERRORE SYNC:
        * Per permettere al sito index pcgl.it di mostrare le news, la lettura
@@ -118,6 +118,15 @@ service cloud.firestore {
        * possono pubblicare o modificare notizie.
        */
       allow write: if isSignedIn() && isPresidente();
+
+      /**
+       * Sottocollezione Conferme di Lettura:
+       * Ogni volontario può registrare la PROPRIA conferma di lettura.
+       */
+      match /conferme/{userId} {
+        allow read: if isSignedIn();
+        allow write: if isSignedIn() && request.auth.uid == userId;
+      }
     }
 
     // ==========================================================================
@@ -216,9 +225,12 @@ service cloud.firestore {
       allow read: if isSignedIn();
       allow create: if isSignedIn() && request.auth.uid == userId;
       allow update: if isSignedIn() && (
-        request.auth.uid == userId || 
+        // L'utente modifica se stesso ma NON i privilegi o lo stato
+        (request.auth.uid == userId && !request.resource.data.diff(resource.data).affectedKeys().hasAny(['ruolo', 'stato', 'numeroTessera'])) || 
+        // Il Coordinamento può modificare tutto
         isCoordinamento() || 
-        (isPresidente() && belongsToSede(resource.data.sede))
+        // Il Presidente può modificare ma non promuovere qualcuno a ruolo superiore (bloccato dal backend)
+        (isPresidente() && belongsToSede(resource.data.sede) && !request.resource.data.diff(resource.data).affectedKeys().hasAny(['ruolo']))
       );
       allow delete: if isCoordinamento() || (isPresidente() && belongsToSede(resource.data.sede));
     }
@@ -269,6 +281,10 @@ service cloud.firestore {
           request.auth.uid in get(/databases/$(database)/documents/moduli/$(moduloId)).data.membri ||
           get(/databases/$(database)/documents/moduli/$(moduloId)).data.adminId == request.auth.uid ||
           isCoordinamento()
+        );
+        allow delete: if isSignedIn() && (
+          get(/databases/$(database)/documents/moduli/$(moduloId)).data.adminId == request.auth.uid ||
+          isAdmin()
         );
       }
     }
@@ -345,20 +361,25 @@ service cloud.firestore {
     // ==========================================================================
 
     match /module_forms/{formId} {
-      // ATTENZIONE: Questa collezione sembra non essere più in uso attivo, ma le regole
-      // sono state rese più sicure per prevenire abusi.
       allow read: if isSignedIn();
-      allow create: if isSignedIn() && isCoordinamento();
-      allow update, delete: if isSignedIn() && (isCoordinamento() || resource.data.createdBy == request.auth.uid);
+      allow create: if isSignedIn() && (isCoordinamento() || isModuleAdmin(request.resource.data.moduleId));
+      allow update, delete: if isSignedIn() && (isCoordinamento() || isModuleAdmin(resource.data.moduleId));
+      
+      match /responses/{responseId} {
+         allow read: if isSignedIn();
+         allow create: if isSignedIn() && request.resource.data.uid == request.auth.uid;
+         allow update, delete: if isSignedIn() && (isCoordinamento() || isModuleAdmin(get(/databases/$(database)/documents/module_forms/$(formId)).data.moduleId));
+      }
     }
 
     match /custom_forms/{formId} {
       // Lettura permessa al responsabile del modulo o allo staff.
-      allow get: if isSignedIn() && (isCoordinamento() || resource.data.responsibleId == request.auth.uid);
-      // Il list è permesso solo al Coordinamento (che può vedere tutto).
-      // I singoli responsabili possono fare query filtrate lato client (es. where('responsibleId', '==', uid))
-      // che vengono validate dalla regola 'get' su ogni documento.
-      allow list: if isSignedIn() && isCoordinamento();
+      // "GET": Chiunque sia loggato può leggere la definizione di un form se ha l'ID (il link).
+      allow get: if isSignedIn();
+      // "LIST": Coordinamento vede tutto.
+      // I Presidenti/Responsabili vedono solo i moduli assegnati a loro (query filter required).
+      allow list: if isSignedIn() && (isCoordinamento() || resource.data.responsibleId == request.auth.uid);
+      
       allow create: if isCoordinamento();
       allow update, delete: if isSignedIn() && (isCoordinamento() || resource.data.responsibleId == request.auth.uid);
     }
@@ -373,9 +394,21 @@ service cloud.firestore {
       /**
        * Read: Permesso per verificare disponibilità o Staff per triage.
        */
-      allow read: if isSignedIn();
+      allow read: if isSignedIn() && (
+        isCoordinamento() ||
+        resource.data.userId == request.auth.uid ||
+        isFormResponsible(resource.data.formId)
+      );
       allow create: if isSignedIn() && request.resource.data.userId == request.auth.uid;
-      allow update, delete: if isCoordinamento();
+      
+      // Update: L'autore può modificare la sua risposta. Anche il Coordinamento può farlo per correzioni.
+      allow update: if isSignedIn() && (
+        resource.data.userId == request.auth.uid || 
+        isCoordinamento()
+      );
+      
+      // Delete: Solo il SuperAdmin può eliminare le risposte (come richiesto).
+      allow delete: if isSuperAdmin();
     }
 
     // ==========================================================================
@@ -420,9 +453,10 @@ service cloud.firestore {
       allow update, delete: if isSignedIn() && (resource.data.uid == request.auth.uid || isCoordinamento());
     }
 
-    match /documenti/{document=**} {
+    match /documenti/{docId} {
       allow read: if isSignedIn();
-      allow write: if isPresidente();
+      allow create: if isSignedIn() && (isCoordinamento() || (isPresidente() && request.resource.data.sede == getUserData().sede));
+      allow update, delete: if isSignedIn() && (isCoordinamento() || (isPresidente() && resource.data.sede == getUserData().sede));
     }
 
     match /risorse/{document=**} {
@@ -431,7 +465,107 @@ service cloud.firestore {
     }
 
     // ==========================================================================
-    // --- 12. REGOLA DI CHIUSURA FINALE (CATCH-ALL) ---
+    // --- 12. GESTIONE PRESENZE (QR CODE PUBBLICO) ---
+    // ==========================================================================
+
+    match /registro_presenze/{docId} {
+      allow read: if true;
+      allow write: if isSignedIn();
+    }
+    
+    match /presenze_registrate/{docId} {
+      allow create: if true; 
+      allow read, update, delete: if isSignedIn();
+    }
+
+    match /telegram_uploads/{docId} {
+      allow read: if isSignedIn();
+      allow create: if false; // Solo la Cloud Function può creare i record dai messaggi
+      allow update, delete: if isCoordinamento() || isPresidente();
+    }
+
+    // ==========================================================================
+    // --- 13. SALA OPERATIVA (SOGL) E CAMPAGNA AIB ---
+    // ==========================================================================
+
+    /**
+     * Verifica se l'utente può operare nella Sala Operativa SOGL:
+     * Coordinamento+ sempre, oppure volontario assegnato a un modulo Sala Operativa.
+     */
+    function isSalaOperativaStaff() {
+      let data = getUserData();
+      return isCoordinamento() ||
+             (data.moduli is list && data.moduli.hasAny(['Sala Operativa', 'SALA OPERATIVA', 'PMA - SALA OPERATIVA']));
+    }
+
+    match /salaop_eventi/{eventoId} {
+      allow read, write: if isSignedIn() && isSalaOperativaStaff();
+    }
+
+    match /salaop_diario/{voceId} {
+      allow read, write: if isSignedIn() && isSalaOperativaStaff();
+    }
+
+    match /salaop_magazzini/{magazzinoId} {
+      allow read, write: if isSignedIn() && isSalaOperativaStaff();
+    }
+
+    match /salaop_materiali/{materialeId} {
+      allow read, write: if isSignedIn() && isSalaOperativaStaff();
+    }
+
+    match /salaop_movimenti/{movimentoId} {
+      allow read, write: if isSignedIn() && isSalaOperativaStaff();
+    }
+
+    /**
+     * Interventi Campagna AIB (incendi boschivi).
+     * Visibili/gestibili da Coordinamento+ o dalle sedi coinvolte
+     * (sede richiedente o sedi in supporto).
+     */
+    match /aib_interventi/{aibId} {
+      function isSedeCoinvolta() {
+        return belongsToSede(resource.data.sedeRichiedente) ||
+               (resource.data.sediSupporto is list && resource.data.sediSupporto.hasAny([getUserData().sede]));
+      }
+      allow read: if isSignedIn() && (isCoordinamento() || isSedeCoinvolta());
+      allow create: if isSignedIn() && (isCoordinamento() || isPresidente());
+      allow update: if isSignedIn() && (isCoordinamento() || isSedeCoinvolta());
+      allow delete: if isCoordinamento();
+    }
+
+    /**
+     * Dirette live smartphone -> Sala Operativa (WebRTC; su Firestore passa solo la
+     * segnalazione per stabilire il collegamento, mai il video).
+     * Il documento ha come id l'uid di chi trasmette.
+     */
+    match /live_streams/{streamId} {
+      allow read: if isSignedIn() && (request.auth.uid == streamId || isSalaOperativaStaff());
+      allow create: if isSignedIn()
+                    && request.auth.uid == streamId
+                    && request.resource.data.uid == request.auth.uid
+                    && getUserData().stato == 'attivo';
+      allow update: if isSignedIn() && request.auth.uid == streamId;
+      allow delete: if isSignedIn() && (request.auth.uid == streamId || isCoordinamento());
+
+      match /viewers/{viewerId} {
+        allow read: if isSignedIn() && (request.auth.uid == streamId || request.auth.uid == viewerId);
+        allow create: if isSignedIn() && request.auth.uid == viewerId && isSalaOperativaStaff();
+        allow update, delete: if isSignedIn() && (request.auth.uid == streamId || request.auth.uid == viewerId);
+
+        match /pubCandidates/{candId} {
+          allow read, delete: if isSignedIn() && (request.auth.uid == streamId || request.auth.uid == viewerId);
+          allow create: if isSignedIn() && request.auth.uid == streamId;
+        }
+        match /viewCandidates/{candId} {
+          allow read, delete: if isSignedIn() && (request.auth.uid == streamId || request.auth.uid == viewerId);
+          allow create: if isSignedIn() && request.auth.uid == viewerId;
+        }
+      }
+    }
+
+    // ==========================================================================
+    // --- 14. REGOLA DI CHIUSURA FINALE (CATCH-ALL) ---
     // ==========================================================================
 
     match /{document=**} {

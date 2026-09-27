@@ -2,25 +2,40 @@ import React, { useState, useEffect, useRef } from 'react';
 import { 
   Shield, QrCode, LogOut, User, MapPin, Home, Megaphone, CheckCircle, Users, 
   Activity, ChevronLeft, TriangleAlert, Truck, Trash2, BookOpen,
-  Search, Send, Plus, X, Bell, 
+  Search, Send, Plus, X, Bell, Info,
   Settings, Check, Camera, Award, Briefcase, UserCheck, Verified, CloudRain, UserMinus,
   FileText, Lock, File, ClipboardList, Ban, MessageCircle, Download, Mail, Printer, Clock, Map as MapIcon, BarChart3, Search as SearchIcon,
   Sun, CloudLightning, CloudOff, Eye, EyeOff, ScanLine, Calendar as CalendarIcon, Paperclip, MessageSquare, ClipboardCheck, PieChart, Phone, Building,
-  FileSpreadsheet, AlertTriangle, Fuel, Pencil, Share2, Link as LinkIcon
+  FileSpreadsheet, AlertTriangle, Fuel, Pencil, Share2, Link as LinkIcon, GripVertical, Upload, Pause, Play, FolderKanban, Pin, UserPlus, Radio, Flame, Video
 } from 'lucide-react';
 import { auth, db, storage, generateTesserinoId } from './firebase';
 import { getMessaging, getToken, onMessage } from 'firebase/messaging';
 import { signInWithEmailAndPassword, signOut, onAuthStateChanged, createUserWithEmailAndPassword, sendPasswordResetEmail, setPersistence, browserLocalPersistence, browserSessionPersistence, GoogleAuthProvider, signInWithPopup } from 'firebase/auth';
-import { doc, setDoc, getDoc, getDocs, collection, query, where, onSnapshot, deleteDoc, updateDoc, addDoc, orderBy, arrayUnion, arrayRemove, limit, serverTimestamp } from 'firebase/firestore';
+import { doc, setDoc, getDoc, getDocs, collection, query, where, onSnapshot, deleteDoc, updateDoc, addDoc, orderBy, arrayUnion, arrayRemove, limit, serverTimestamp, getCountFromServer } from 'firebase/firestore';
 import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
 import { getFunctions, httpsCallable } from 'firebase/functions';
 import { Capacitor } from '@capacitor/core';
 import { PushNotifications } from '@capacitor/push-notifications';
 import { toBlob } from 'html-to-image';
+import { HeaderSub, FooterLinks } from './SharedUI';
+import { ModulesManager } from './ModulesManager';
+import { SalaOperativaManager } from './SalaOperativaManager';
+import { CampagnaAIBSOGL } from './CampagnaAIBSOGL.jsx';
+import { LivePublisherSOGL } from './LiveStreamSOGL.jsx';
 
 const BLU_PCGL = "#001a33";
 const GIALLO_PCGL = "#FFCC00";
 const APP_LOGO = "/logo.png?v=3"; // Cache busting per forzare aggiornamento logo (Triangolo)
+
+// --- UTILITY: ESCAPE HTML PER TELEGRAM ---
+const escapeHtml = (unsafe) => {
+    return unsafe
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#039;");
+};
 
 // --- CONFIGURAZIONE DATI STATICI ---
 const DEFAULT_SEDI_ZONES = [
@@ -106,6 +121,31 @@ const getWeatherIcon = (color) => {
     case 'verde': return <Sun size={32} />;
     default: return <CloudOff size={32} />;
   }
+};
+
+const playAlertAlarm = () => {
+  if (localStorage.getItem('pcgl_sound') === 'false') return;
+  try {
+    const AudioContext = window.AudioContext || window.webkitAudioContext;
+    if (!AudioContext) return;
+    const ctx = new AudioContext();
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    osc.type = 'square';
+    osc.frequency.setValueAtTime(400, ctx.currentTime);
+    osc.frequency.linearRampToValueAtTime(800, ctx.currentTime + 0.5);
+    osc.frequency.linearRampToValueAtTime(400, ctx.currentTime + 1);
+    gain.gain.setValueAtTime(0.2, ctx.currentTime);
+    osc.start();
+    setTimeout(() => osc.stop(), 1500);
+  } catch (e) { console.error("Audio error", e); }
+};
+
+const triggerAlertHaptic = () => {
+  if (localStorage.getItem('pcgl_vibration') === 'false') return;
+  if (navigator.vibrate) navigator.vibrate([500, 200, 500, 200, 500]);
 };
 
 const playScanSound = () => {
@@ -203,914 +243,6 @@ const AlertTimer = ({ startDate }) => {
   return <span className="font-mono font-bold text-pcgl-blue bg-blue-50 px-2 py-1 rounded ml-2 text-xs">{diff}</span>;
 };
 
-// --- COMPONENTE FOOTER LINKS ---
-const FooterLinks = ({ className = "", fixed = false }) => (
-  <div className={`w-full text-center flex flex-col items-center gap-1 z-40 ${fixed ? 'fixed bottom-2 left-0 pointer-events-none' : 'pointer-events-auto'} ${className}`}>
-    <a 
-      href="https://www.pcgl.it/privacy.html" 
-      target="_blank" 
-      rel="noopener noreferrer" 
-      className="text-[9px] font-bold text-gray-400/50 uppercase tracking-widest pointer-events-auto hover:text-pcgl-blue transition-colors"
-    >
-      Privacy Policy
-    </a>
-    <a 
-      href="https://www.formazionesicurezza.org/index.html" 
-      target="_blank" 
-      rel="noopener noreferrer" 
-      className="text-[9px] font-bold text-gray-400/50 uppercase tracking-widest pointer-events-auto hover:text-pcgl-blue transition-colors"
-    >
-      Powered by Antonio Mangiamele
-    </a>
-  </div>
-);
-
-const ModulesManager = ({ currentUser, onBack, allUsers, onViewVolunteer }) => {
-  const [modules, setModules] = useState([]);
-  const [myRequests, setMyRequests] = useState([]);
-  const [loading, setLoading] = useState(true);
-  
-  // Admin States
-  const [editingAdminModule, setEditingAdminModule] = useState(null);
-  const [viewingRequests, setViewingRequests] = useState(null);
-  const [moduleRequests, setModuleRequests] = useState([]);
-  const [allPendingRequests, setAllPendingRequests] = useState([]); // Stato per tutte le richieste pendenti
-  const [extraUsers, setExtraUsers] = useState({}); // Cache locale per utenti non in allUsers
-
-  // Admin Search States (Per assegnazione responsabile)
-  const [adminSearchTerm, setAdminSearchTerm] = useState('');
-  const [adminSearchResults, setAdminSearchResults] = useState([]);
-
-  // Docs States
-  const [viewingDocsModuleId, setViewingDocsModuleId] = useState(null);
-  const [moduleDocFile, setModuleDocFile] = useState(null);
-  const [uploadingDoc, setUploadingDoc] = useState(false);
-  const [commentingDoc, setCommentingDoc] = useState(null); // Doc url per commenti
-  const [docComments, setDocComments] = useState([]);
-  const [newComment, setNewComment] = useState('');
-
-  // Forms States
-  const [activeForms, setActiveForms] = useState([]);
-  const [viewingForm, setViewingForm] = useState(null); // Form object per rispondere/vedere
-  const [formAnswers, setFormAnswers] = useState({});
-  const [formResponses, setFormResponses] = useState([]); // Per admin
-  const [notifMode, setNotifMode] = useState('message'); // 'message' | 'form'
-  const [formBuilder, setFormBuilder] = useState({ title: '', questions: [] });
-  const [tempQuestion, setTempQuestion] = useState({ text: '', type: 'text' });
-  
-  // Editor States
-  const [isEditorOpen, setIsEditorOpen] = useState(false);
-  const [editingModuleId, setEditingModuleId] = useState(null);
-  const [moduleForm, setModuleForm] = useState({ nome: '', descrizione: '', requisiti: [], domande: [], allowMemberUploads: false });
-  const [reqInput, setReqInput] = useState('');
-  const [qForm, setQForm] = useState({ testo: '', tipo: 'booleano', opzioni: [], requisitoAssociato: '' });
-  const [optInput, setOptionInput] = useState('');
-
-  // Application States
-  const [applyingModule, setApplyingModule] = useState(null);
-  const [applicationAnswers, setApplicationAnswers] = useState({});
-
-  const [notifModal, setNotifModal] = useState(null);
-  const [notifText, setNotifText] = useState('');
-  const [printingModule, setPrintingModule] = useState(null);
-  const [showMyModulesOnly, setShowMyModulesOnly] = useState(false);
-  const [selectedMemberContact, setSelectedMemberContact] = useState(null);
-
-  const activeModuleDocs = modules.find(m => m.id === viewingDocsModuleId);
-
-  useEffect(() => {
-    const q = query(collection(db, 'moduli'));
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      setModules(snapshot.docs.map(d => ({ id: d.id, ...d.data() })));
-      setLoading(false);
-    }, (error) => console.error("Modules sync error:", error));
-    return () => unsubscribe();
-  }, []);
-
-  // SYNC RICHIESTE PENDENTI (Per Badge Notifica)
-  useEffect(() => {
-    // Ascolta tutte le richieste in attesa per mostrare i badge sui moduli
-    if (['admin', 'superadmin', 'coordinamento'].includes(currentUser.ruolo)) {
-        const q = query(collection(db, 'richieste_modulo'), where('stato', '==', 'in_attesa'));
-        const unsubscribe = onSnapshot(q, (snapshot) => {
-          setAllPendingRequests(snapshot.docs.map(d => ({ id: d.id, ...d.data() })));
-        }, (error) => console.warn("Error syncing requests (Badge):", error));
-        return () => unsubscribe();
-    }
-  }, [currentUser.ruolo]);
-
-  // SYNC COMMENTI DOCUMENTO
-  useEffect(() => {
-    if (commentingDoc && commentingDoc.url) {
-        // Usa un ID sicuro basato sull'URL del documento
-        const docId = btoa(commentingDoc.url).substring(0, 20); 
-        const q = query(collection(db, 'module_doc_comments'), where('docUrl', '==', commentingDoc.url), orderBy('date', 'asc'));
-        const unsub = onSnapshot(q, (s) => {
-            setDocComments(s.docs.map(d => d.data()));
-        }, (error) => console.error("Comments sync error:", error));
-        return () => unsub();
-    }
-  }, [commentingDoc]);
-
-  // SYNC FORM ATTIVI DEL MODULO
-  useEffect(() => {
-      if (viewingRequests) { 
-          const q = query(collection(db, 'module_forms'), where('moduleId', '==', viewingRequests));
-          const unsub = onSnapshot(q, (s) => {
-              setActiveForms(s.docs.map(d => ({ id: d.id, ...d.data() })));
-          }, (error) => console.error("Active forms sync error:", error));
-          return () => unsub();
-      } else {
-          // Carica form anche per i membri normali (se non sono admin)
-          // Nota: Questo richiederebbe di sapere quale modulo è "aperto" per il membro.
-          // Per semplicità, carichiamo i form quando si clicca su un modulo o si espande.
-      }
-  }, [viewingRequests]);
-
-  const fetchMyRequests = async () => {
-      if (!currentUser?.uid) return;
-      try {
-          const token = await auth.currentUser.getIdToken();
-          const response = await fetch('https://europe-west1-pcgl-volontari.cloudfunctions.net/getUserModuleRequests', {
-              headers: { 'Authorization': `Bearer ${token}` }
-          });
-          if (response.ok) {
-              const data = await response.json();
-              setMyRequests(data);
-          }
-      } catch (e) { console.error("Errore fetch richieste:", e); }
-  };
-
-  useEffect(() => {
-      fetchMyRequests();
-  }, [currentUser]);
-
-  // Carica richieste quando un admin apre la dashboard del modulo
-  useEffect(() => {
-    if (viewingRequests) {
-        const q = query(collection(db, 'richieste_modulo'), where('moduloId', '==', viewingRequests), where('stato', '==', 'in_attesa'));
-        const unsub = onSnapshot(q, (s) => {
-            setModuleRequests(s.docs.map(d => ({ id: d.id, ...d.data() })));
-        }, (error) => console.error("Module requests sync error:", error));
-        return () => unsub();
-    }
-  }, [viewingRequests]);
-
-  // Recupera dati utenti mancanti (per admin modulo che non vedono allUsers)
-  useEffect(() => {
-    const fetchMissingUsers = async () => {
-        const uidsToFetch = new Set();
-        
-        // 1. Fetch Admins of all modules (to show "Responsabile: ...")
-        modules.forEach(m => { if(m.adminId) uidsToFetch.add(m.adminId); });
-
-        // 2. Fetch Members of the currently viewed module (dashboard)
-        if (viewingRequests) {
-            const m = modules.find(mod => mod.id === viewingRequests);
-            if (m && m.membri) m.membri.forEach(uid => uidsToFetch.add(uid));
-        }
-        
-        const missing = [...uidsToFetch].filter(uid => uid && !allUsers.find(u => u.id === uid) && !extraUsers[uid]);
-
-        for (const uid of missing) {
-            try {
-                const snap = await getDoc(doc(db, 'users', uid));
-                if (snap.exists()) setExtraUsers(prev => ({...prev, [uid]: {id: uid, ...snap.data()}}));
-            } catch (e) { console.error("Error fetching user", uid, e); }
-        }
-    };
-    fetchMissingUsers();
-  }, [modules, currentUser.uid, allUsers, viewingRequests]);
-
-  const handleApply = async (module) => {
-      // Se ci sono domande, apri il modale di candidatura
-      if (module.domande && module.domande.length > 0) {
-          setApplyingModule(module);
-          return;
-      }
-      // Altrimenti invia richiesta diretta
-      await sendApplication(module, []);
-  };
-
-  const sendApplication = async (module, answers) => {
-      try {
-          const token = await auth.currentUser.getIdToken();
-          const response = await fetch('https://europe-west1-pcgl-volontari.cloudfunctions.net/createModuleRequest', {
-              method: 'POST',
-              headers: {
-                  'Authorization': `Bearer ${token}`,
-                  'Content-Type': 'application/json'
-              },
-              body: JSON.stringify({
-                  moduloId: module.id,
-                  nomeModulo: module.nome,
-                  risposte: answers
-              })
-          });
-          if (!response.ok) throw new Error("Errore server durante l'invio della richiesta.");
-
-          alert("Richiesta inviata!");
-          setApplyingModule(null);
-          setApplicationAnswers({});
-          fetchMyRequests(); // Aggiorna la lista
-      } catch (e) { console.error(e); alert("Errore invio richiesta: " + e.message); }
-  };
-
-  const submitApplication = (e) => {
-    e.preventDefault();
-    if (!applyingModule) return;
-    const formattedAnswers = applyingModule.domande ? applyingModule.domande.map(q => ({
-        domanda: q.testo,
-        risposta: applicationAnswers[q.id] === undefined ? (q.tipo === 'booleano' ? false : '') : applicationAnswers[q.id],
-        requisitoAssociato: q.requisitoAssociato || null
-    })) : [];
-    sendApplication(applyingModule, formattedAnswers);
-  };
-
-  const handleAdminAction = async (reqId, action) => {
-      try {
-          await updateDoc(doc(db, 'richieste_modulo', reqId), {
-              stato: action === 'approve' ? 'approvata' : 'rifiutata',
-              dataValutazione: new Date().toISOString(),
-              valutatoDa: currentUser.uid
-          });
-      } catch (e) { console.error(e); }
-  };
-
-  const handleLeave = async (moduleId) => {
-    if (!moduleId) return;
-    if (window.confirm("Sei sicuro di voler lasciare questo modulo?")) {
-      try {
-        await updateDoc(doc(db, 'moduli', moduleId), { membri: arrayRemove(currentUser.uid) });
-      } catch (error) { console.error("Errore uscita:", error); }
-    }
-  };
-
-  const handleRemoveMember = async (moduleId, userId) => {
-    if (!moduleId || !userId) return;
-    if (window.confirm("Rimuovere questo volontario dal modulo?")) {
-      try {
-        await updateDoc(doc(db, 'moduli', moduleId), { membri: arrayRemove(userId) });
-      } catch (error) { console.error("Errore rimozione:", error); }
-    }
-  };
-
-  const handleUploadModuleDoc = async () => {
-      if (!activeModuleDocs || !moduleDocFile) { alert("Seleziona un file."); return; }
-      if (moduleDocFile.size > 10 * 1024 * 1024) { alert("File troppo grande (Max 10MB)."); return; }
-      setUploadingDoc(true);
-      
-      try {
-          const storageRef = ref(storage, `module_docs/${activeModuleDocs.id}/${Date.now()}_${moduleDocFile.name}`);
-          await uploadBytes(storageRef, moduleDocFile);
-          const url = await getDownloadURL(storageRef);
-          
-          await updateDoc(doc(db, 'moduli', activeModuleDocs.id), {
-              documenti: arrayUnion({
-                  nome: moduleDocFile.name,
-                  url: url,
-                  data: new Date().toISOString(),
-                  autore: `${currentUser.nome} ${currentUser.cognome}`,
-                  uid: currentUser.uid
-              })
-          });
-          
-          setModuleDocFile(null);
-          alert("Documento caricato!");
-      } catch (e) {
-          console.error(e);
-          alert("Errore caricamento documento");
-      } finally {
-          setUploadingDoc(false);
-      }
-  };
-
-  const handleDeleteModuleDoc = async (docData) => {
-      if (!activeModuleDocs || !activeModuleDocs.id) return;
-      // Permessi: Autore del doc, Admin globale, o Admin del modulo
-      const isAuthor = docData.uid === currentUser.uid;
-      const isGlobalAdmin = ['admin', 'superadmin'].includes(currentUser.ruolo);
-      const isModuleAdmin = activeModuleDocs.adminId === currentUser.uid;
-
-      if (!isAuthor && !isGlobalAdmin && !isModuleAdmin) {
-          alert("Non hai i permessi per eliminare questo documento.");
-          return;
-      }
-
-      if (confirm("Eliminare questo documento?")) {
-          try {
-              await updateDoc(doc(db, 'moduli', activeModuleDocs.id), {
-                  documenti: arrayRemove(docData)
-              });
-          } catch (e) { console.error(e); alert("Errore rimozione."); }
-      }
-  };
-
-  const handleAddComment = async () => {
-      if (!newComment.trim() || !commentingDoc) return;
-      await addDoc(collection(db, 'module_doc_comments'), {
-          docUrl: commentingDoc.url, moduleId: activeModuleDocs.id, text: newComment, author: `${currentUser.nome} ${currentUser.cognome}`, uid: currentUser.uid, date: new Date().toISOString()
-      });
-      setNewComment('');
-  };
-
-  const searchAdminUser = async () => {
-      if (!adminSearchTerm || adminSearchTerm.length < 3) return;
-      const q = query(collection(db, 'users'), where('cognome', '>=', adminSearchTerm.toUpperCase()), where('cognome', '<=', adminSearchTerm.toUpperCase() + '\uf8ff'), limit(5));
-      const snap = await getDocs(q);
-      setAdminSearchResults(snap.docs.map(d => ({id: d.id, ...d.data()})));
-  };
-
-  // --- EDITOR LOGIC ---
-  const openEditor = (module = null) => {
-      if (module) {
-          setEditingModuleId(module.id);
-          setModuleForm({
-              nome: module.nome,
-              descrizione: module.descrizione,
-              requisiti: module.requisiti || [],
-              domande: module.domande || [],
-              allowMemberUploads: module.allowMemberUploads || false
-          });
-      } else {
-          setEditingModuleId(null);
-          setModuleForm({ nome: '', descrizione: '', requisiti: [], domande: [], allowMemberUploads: false });
-      }
-      setIsEditorOpen(true);
-  };
-
-  const saveModule = async () => {
-      if (!moduleForm.nome) return alert("Inserisci il nome del modulo");
-      const payload = { ...moduleForm, nome: moduleForm.nome.toUpperCase() };
-      try {
-          if (editingModuleId) {
-              await updateDoc(doc(db, 'moduli', editingModuleId), payload);
-          } else {
-              await addDoc(collection(db, 'moduli'), { ...payload, adminId: currentUser.uid, membri: [currentUser.uid] });
-          }
-          setIsEditorOpen(false);
-      } catch (e) { console.error(e); alert("Errore salvataggio modulo"); }
-  };
-
-  const handleDelete = async (id) => {
-      if (!id) return;
-      if (!id) return;
-      if (window.confirm("Eliminare definitivamente questo modulo?")) {
-          await deleteDoc(doc(db, 'moduli', id));
-      }
-  };
-
-  const addQuestion = () => {
-      if (!qForm.testo) return;
-      setModuleForm(prev => ({ ...prev, domande: [...prev.domande, { ...qForm, id: Date.now().toString() }] }));
-      setQForm({ testo: '', tipo: 'booleano', opzioni: [], requisitoAssociato: '' });
-  };
-
-  const removeQuestion = (index) => {
-      setModuleForm(prev => ({ ...prev, domande: prev.domande.filter((_, i) => i !== index) }));
-  };
-
-  const getUserData = (uid) => allUsers.find(u => u.id === uid) || extraUsers[uid];
-
-  const getName = (uid) => {
-      const u = getUserData(uid);
-      return u ? `${u.nome} ${u.cognome}` : "Utente non trovato";
-  };
-
-  const canManage = (module) => {
-    if (['superadmin', 'admin'].includes(currentUser.ruolo)) return true;
-    if (module.adminId === currentUser.uid) return true;
-    return false;
-  };
-
-  const canUploadDocs = (module) => {
-      if (!module) return false;
-      if (['superadmin', 'admin'].includes(currentUser.ruolo)) return true;
-      if (module.adminId === currentUser.uid) return true;
-      return module.membri?.includes(currentUser.uid) && module.allowMemberUploads;
-  };
-
-  const sendNotification = async () => {
-    if (!notifText) return;
-    try {
-        const token = await auth.currentUser.getIdToken();
-        await fetch('https://europe-west1-pcgl-volontari.cloudfunctions.net/sendModuleNotification', {
-            method: 'POST',
-            headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
-            body: JSON.stringify({ moduleId: notifModal.moduleId, title: `Comunicazione ${notifModal.moduleName}`, body: notifText })
-        });
-        alert("Notifica inviata!");
-        setNotifModal(null); 
-        setNotifText('');
-    } catch (e) { console.error(e); alert("Errore invio: " + e.message); }
-  };
-
-  const handlePrintModule = (module) => {
-      setPrintingModule(module);
-      setTimeout(() => window.print(), 500);
-  };
-
-  if (loading) return <div className="p-8 text-center">Caricamento Moduli...</div>;
-
-  return (
-      <div className="animate-in slide-in-from-right duration-500 w-full pb-40">
-          <HeaderSub title="Moduli Operativi" onBack={onBack} />
-
-          <div className="flex flex-wrap gap-2 mb-6">
-              {['admin', 'superadmin'].includes(currentUser.ruolo) && (
-                  <button onClick={() => openEditor()} className="flex-1 py-3 bg-pcgl-blue text-white rounded-xl font-bold uppercase shadow-md flex items-center justify-center">
-                      <Plus className="mr-2"/> Crea Modulo
-                  </button>
-              )}
-              <button onClick={() => setShowMyModulesOnly(!showMyModulesOnly)} className={`flex-1 py-3 rounded-xl font-bold uppercase shadow-md flex items-center justify-center transition-all ${showMyModulesOnly ? 'bg-pcgl-yellow text-pcgl-blue' : 'bg-white text-gray-500'}`}>
-                  {showMyModulesOnly ? <CheckCircle className="mr-2" size={20}/> : <Users className="mr-2" size={20}/>} I Miei Moduli
-              </button>
-          </div>
-
-          <div className="space-y-6">
-            {modules.filter(m => showMyModulesOnly ? m.membri?.includes(currentUser.uid) : true).map(module => {
-              const isMember = module.membri?.includes(currentUser.uid);
-              const isManager = canManage(module);
-              
-              const myModuleRequests = myRequests.filter(r => r.moduloId === module.id);
-              const pendingReq = myModuleRequests.find(r => r.stato === 'in_attesa');
-              
-              const isAdminOrSuper = ['admin', 'superadmin'].includes(currentUser.ruolo);
-              const pendingCount = allPendingRequests.filter(r => r.moduloId === module.id).length;
-              const hasForms = activeForms.some(f => f.moduleId === module.id); // Solo indicativo se caricati
-
-              return (
-                <div key={module.id} className="bg-white p-6 rounded-3xl shadow-card border border-gray-100 relative overflow-hidden">
-                  {isManager && <div className="absolute top-0 right-0 bg-yellow-400 text-blue-900 text-xs font-bold px-3 py-1 rounded-bl-xl uppercase">Admin</div>}
-                  {isManager && pendingCount > 0 && (
-                      <div className="absolute top-0 left-0 bg-red-500 text-white text-[10px] font-bold px-3 py-1 rounded-br-xl uppercase animate-pulse">
-                          {pendingCount} Richieste
-                      </div>
-                  )}
-                  <div className="flex justify-between items-start mb-4 pr-16">
-                    <div>
-                        <h3 className="font-black text-xl text-pcgl-blue uppercase">{module.nome}</h3>
-                        <p className="text-sm text-gray-500">{module.descrizione}</p>
-                        {module.adminId && <p className="text-xs text-pcgl-blue mt-1 font-bold">Responsabile: {getName(module.adminId)}</p>}
-                    </div>
-                    <div className="flex items-center bg-gray-100 px-3 py-1 rounded-full"><Users size={16} className="text-gray-500 mr-2" /><span className="font-bold text-gray-600">{module.membri?.length || 0}</span></div>
-                    <div className="absolute top-4 right-4 flex gap-1">
-                        {isManager && (
-                            <button onClick={() => openEditor(module)} className="p-2 bg-blue-50 text-blue-500 rounded-lg hover:bg-blue-100"><Pencil size={18}/></button>
-                        )}
-                        {isAdminOrSuper && (
-                            <button onClick={() => handleDelete(module.id)} className="p-2 bg-red-50 text-red-500 rounded-lg hover:bg-red-100"><Trash2 size={18}/></button>
-                        )}
-                    </div>
-                  </div>
-                  
-                  <div className="mb-4">
-                    <p className="text-xs font-bold text-gray-400 uppercase mb-2">Requisiti</p>
-                    <div className="flex flex-wrap gap-2">
-                      {module.requisiti?.map(r => <span key={r} className="px-2 py-1 bg-gray-100 rounded text-xs font-bold uppercase border">{r}</span>)}
-                      {(!module.requisiti || module.requisiti.length === 0) && <span className="text-gray-400 text-xs italic">Nessuno</span>}
-                    </div>
-                  </div>
-
-                  <div className="flex gap-3 mt-6 flex-wrap">
-                    {isMember ? (
-                      <button onClick={() => handleLeave(module.id)} className="flex-1 py-3 bg-red-50 text-red-600 rounded-xl font-bold uppercase text-sm flex items-center justify-center hover:bg-red-100 transition-colors"><UserMinus size={18} className="mr-2" /> Lascia</button>
-                    ) : pendingReq ? (
-                      <div className="flex-1 py-3 bg-yellow-100 text-yellow-700 rounded-xl font-bold uppercase text-sm text-center">In Attesa</div>
-                    ) : (
-                      <button onClick={() => handleApply(module)} className="flex-1 py-3 bg-pcgl-blue text-white rounded-xl font-bold uppercase text-sm flex items-center justify-center hover:bg-pcgl-yellow hover:text-pcgl-blue transition-colors shadow-lg"><Plus size={18} className="mr-2" /> Candidati</button>
-                    )}
-                    
-                    {/* Gestione Admin Modulo */}
-                    {isAdminOrSuper && (
-                      <div className="w-full mt-2">
-                          {editingAdminModule === module.id ? (
-                              <div className="bg-gray-50 p-3 rounded-xl border border-gray-200 animate-in fade-in">
-                                  <p className="text-xs font-bold text-gray-400 mb-2 uppercase">Cerca Responsabile</p>
-                                  <div className="flex gap-2 mb-2">
-                                      <input type="text" placeholder="Cognome..." className="flex-1 p-2 rounded-lg text-sm border" value={adminSearchTerm} onChange={e => setAdminSearchTerm(e.target.value)} onKeyPress={e => e.key === 'Enter' && searchAdminUser()} />
-                                      <button onClick={searchAdminUser} className="p-2 bg-pcgl-blue text-white rounded-lg"><Search size={16}/></button>
-                                      <button onClick={() => { setEditingAdminModule(null); setAdminSearchTerm(''); setAdminSearchResults([]); }} className="p-2 bg-red-100 text-red-600 rounded-lg"><X size={16}/></button>
-                                  </div>
-                                  {adminSearchResults.length > 0 && (
-                                      <div className="space-y-1 max-h-40 overflow-y-auto">
-                                          {adminSearchResults.map(u => (
-                                              <div key={u.id} onClick={async () => { 
-                                                  await updateDoc(doc(db, 'moduli', module.id), { adminId: u.id, membri: arrayUnion(u.id) }); 
-                                                  setEditingAdminModule(null); 
-                                                  setAdminSearchTerm(''); 
-                                                  setAdminSearchResults([]); 
-                                                  alert("Responsabile aggiornato!");
-                                              }} className="p-2 bg-white rounded border cursor-pointer hover:bg-blue-50 text-xs flex justify-between items-center">
-                                                  <span className="font-bold uppercase">{u.cognome} {u.nome}</span>
-                                                  <span className="text-gray-400 text-[10px]">{u.sede} • {u.ruolo}</span>
-                                              </div>
-                                          ))}
-                                      </div>
-                                  )}
-                              </div>
-                          ) : (
-                              <button onClick={() => setEditingAdminModule(module.id)} className="w-full py-2 bg-gray-100 text-gray-600 rounded-xl font-bold uppercase text-xs hover:bg-pcgl-yellow hover:text-pcgl-blue transition-colors flex items-center justify-center"><Settings size={16} className="mr-2" /> Gestisci Responsabile</button>
-                          )}
-                      </div>
-                    )}
-                  </div>
-                  
-                  <button onClick={() => setViewingDocsModuleId(module.id)} className="w-full mt-3 py-2 bg-gray-100 text-pcgl-blue rounded-xl font-bold uppercase text-xs flex items-center justify-center hover:bg-gray-200 transition-colors">
-                      <FileText size={16} className="mr-2"/> Documenti
-                  </button>
-
-                  {(isManager || isMember) && (
-                    <button onClick={() => setViewingRequests(viewingRequests === module.id ? null : module.id)} className={`w-full mt-3 py-2 rounded-xl font-bold uppercase text-xs flex items-center justify-center ${isManager ? 'bg-blue-50 text-blue-700' : 'bg-gray-50 text-gray-600'}`}>
-                        {viewingRequests === module.id ? 'Chiudi Dashboard' : (isManager ? 'Gestisci Membri & Richieste' : 'Sondaggi & Attività')}
-                    </button>
-                  )}
-                  {isManager && (
-                      <button onClick={() => setNotifModal({ moduleId: module.id, moduleName: module.nome })} className="w-full mt-2 py-2 bg-white border border-gray-200 text-gray-600 rounded-xl font-bold uppercase text-xs flex items-center justify-center hover:bg-gray-50"><Bell size={16} className="mr-2"/> Invia Notifica Membri</button>
-                  )}
-
-                  {viewingRequests === module.id && (
-                      <div className="mt-4 bg-gray-50 p-4 rounded-xl border border-gray-200 animate-in fade-in">
-                          
-                          {/* SEZIONE FORM ATTIVI */}
-                          <h4 className="font-bold text-xs uppercase text-gray-500 mb-3 flex items-center"><ClipboardCheck size={14} className="mr-1"/> Moduli Dati / Sondaggi</h4>
-                          {activeForms.length === 0 ? <p className="text-xs italic text-gray-400 mb-4">Nessun modulo attivo.</p> : (
-                              <div className="space-y-2 mb-6">
-                                  {activeForms.map(form => (
-                                      <div key={form.id} className="bg-white p-3 rounded-lg shadow-sm border border-gray-100 flex justify-between items-center">
-                                          <span className="text-sm font-bold text-pcgl-blue">{form.title}</span>
-                                          {isManager ? 
-                                            <button onClick={() => loadFormResponses(form)} className="text-xs bg-blue-100 text-blue-700 px-2 py-1 rounded font-bold">Vedi Risposte</button> :
-                                            <button onClick={() => setViewingForm(form)} className="text-xs bg-green-100 text-green-700 px-2 py-1 rounded font-bold">Compila</button>
-                                          }
-                                      </div>
-                                  ))}
-                              </div>
-                          )}
-
-                          {isManager && (
-                          <>
-                          <h4 className="font-bold text-xs uppercase text-gray-500 mb-3">Richieste in attesa</h4>
-                          {moduleRequests.length === 0 ? <p className="text-xs italic text-gray-400">Nessuna richiesta pendente.</p> : (
-                              <div className="space-y-3">
-                                  {moduleRequests.map(req => (
-                                      <div key={req.id} className="bg-white p-3 rounded-lg shadow-sm border border-gray-100">
-                                          <p className="font-bold text-sm uppercase text-pcgl-blue">{req.volontarioNome}</p>
-                                          <div className="my-2 space-y-1">
-                                              {req.risposte?.map((r, idx) => (
-                                                  <div key={idx} className="text-xs flex justify-between border-b border-gray-50 pb-1">
-                                                      <span className="text-gray-600 w-2/3">{r.domanda}</span>
-                                                      <span className={`font-bold ${r.risposta === true || r.risposta === 'si' ? 'text-green-600' : 'text-gray-800'}`}>{r.risposta === true ? 'SÌ' : r.risposta === false ? 'NO' : r.risposta}</span>
-                                                  </div>
-                                              ))}
-                                          </div>
-                                          <div className="flex gap-2 mt-2">
-                                              <button onClick={() => handleAdminAction(req.id, 'approve')} className="flex-1 py-1 bg-green-500 text-white rounded text-xs font-bold uppercase">Accetta</button>
-                                              <button onClick={() => handleAdminAction(req.id, 'reject')} className="flex-1 py-1 bg-red-500 text-white rounded text-xs font-bold uppercase">Rifiuta</button>
-                                          </div>
-                                      </div>
-                                  ))}
-                              </div>
-                          )}
-
-                          <div className="flex justify-between items-center mt-6 pt-4 border-t border-gray-200 mb-3">
-                              <h4 className="font-bold text-xs uppercase text-gray-500">Membri Iscritti ({module.membri?.length || 0})</h4>
-                              {isManager && <button onClick={() => handlePrintModule(module)} className="text-xs font-bold text-pcgl-blue uppercase flex items-center hover:underline"><Printer size={14} className="mr-1"/> Stampa Report</button>}
-                          </div>
-                          {module.membri && module.membri.length > 0 ? (
-                              <div className="space-y-2">
-                                  {module.membri.map(uid => {
-                                      const member = getUserData(uid);
-                                      return (
-                                          <div key={uid} className="flex justify-between items-center bg-white p-2 rounded-lg border border-gray-100 shadow-sm cursor-pointer hover:bg-gray-50 transition-colors" onClick={() => member && setSelectedMemberContact(member)}>
-                                              <div>
-                                                  <p className="font-bold text-xs uppercase text-pcgl-blue">{member ? `${member.nome} ${member.cognome}` : 'Utente sconosciuto'}</p>
-                                                  <p className="text-[10px] text-gray-400">{member?.sede || uid}</p>
-                                              </div>
-                                              <button onClick={(e) => { e.stopPropagation(); handleRemoveMember(module.id, uid); }} className="text-red-400 hover:bg-red-50 p-1 rounded transition-colors" title="Rimuovi"><X size={16}/></button>
-                                          </div>
-                                      );
-                                  })}
-                              </div>
-                          ) : (
-                              <p className="text-xs italic text-gray-400">Nessun membro iscritto.</p>
-                          )}
-                          </>
-                          )}
-                      </div>
-                  )}
-                </div>
-              );
-            })}
-          </div>
-
-          {/* MODALE EDITOR MODULO */}
-          {isEditorOpen && (
-            <div className="fixed inset-0 bg-black/80 z-[1500] flex items-center justify-center p-4 animate-in fade-in">
-                <div className="bg-white w-full max-w-2xl rounded-3xl p-6 shadow-2xl relative max-h-[90vh] overflow-y-auto">
-                    <button onClick={() => setIsEditorOpen(false)} className="absolute top-4 right-4 text-gray-400"><X/></button>
-                    <h3 className="font-black text-xl text-pcgl-blue uppercase mb-4">{editingModuleId ? 'Modifica Modulo' : 'Nuovo Modulo'}</h3>
-                    
-                    <div className="space-y-4">
-                        <input type="text" placeholder="Nome Modulo" className="w-full p-3 bg-gray-50 rounded-xl border font-bold uppercase" value={moduleForm.nome} onChange={e => setModuleForm({...moduleForm, nome: e.target.value.toUpperCase()})} />
-                        <input type="text" placeholder="Descrizione" className="w-full p-3 bg-gray-50 rounded-xl border" value={moduleForm.descrizione} onChange={e => setModuleForm({...moduleForm, descrizione: e.target.value})} />
-                        
-                        <label className="flex items-center space-x-2 cursor-pointer bg-gray-50 p-3 rounded-xl border">
-                            <input type="checkbox" checked={moduleForm.allowMemberUploads} onChange={e => setModuleForm({...moduleForm, allowMemberUploads: e.target.checked})} className="rounded text-pcgl-blue focus:ring-pcgl-blue" />
-                            <span className="text-sm font-bold text-gray-600 uppercase">Consenti Upload Documenti ai Membri</span>
-                        </label>
-                        
-                        <div>
-                            <label className="text-xs font-bold uppercase text-gray-400">Requisiti Accesso</label>
-                            <div className="flex gap-2 mb-2">
-                                <select className="flex-1 p-2 bg-gray-50 rounded-lg text-sm border" value={reqInput} onChange={e => setReqInput(e.target.value)}>
-                                    <option value="">Aggiungi Requisito...</option>
-                                    {["AIB", "Logistica", "Sala Operativa", "Autista", "Soccorritore", "Radioamatore", "Formatore"].map(s => <option key={s} value={s}>{s}</option>)}
-                                </select>
-                                <button onClick={() => { if(reqInput && !moduleForm.requisiti.includes(reqInput)) { setModuleForm({...moduleForm, requisiti: [...moduleForm.requisiti, reqInput]}); setReqInput(''); } }} className="p-2 bg-blue-100 text-blue-600 rounded-lg"><Plus/></button>
-                            </div>
-                            <div className="flex flex-wrap gap-2">{moduleForm.requisiti.map(r => <span key={r} className="px-2 py-1 bg-gray-100 border rounded-lg text-xs font-bold uppercase flex items-center">{r} <button onClick={() => setModuleForm({...moduleForm, requisiti: moduleForm.requisiti.filter(x => x !== r)})} className="ml-1 text-red-500"><X size={12}/></button></span>)}</div>
-                        </div>
-
-                        <div className="border-t pt-4">
-                            <label className="text-xs font-bold uppercase text-gray-400 mb-2 block">Domande Candidatura</label>
-                            <div className="bg-gray-50 p-4 rounded-xl border mb-4">
-                                <input type="text" placeholder="Testo Domanda" className="w-full p-2 mb-2 bg-white rounded-lg border text-sm" value={qForm.testo} onChange={e => setQForm({...qForm, testo: e.target.value})} />
-                                <div className="flex gap-2 mb-2">
-                                    <select className="flex-1 p-2 bg-white rounded-lg text-sm border" value={qForm.tipo} onChange={e => setQForm({...qForm, tipo: e.target.value})}>
-                                        <option value="booleano">Sì / No</option>
-                                        <option value="testo">Testo Libero</option>
-                                        <option value="scelta">Scelta Multipla</option>
-                                    </select>
-                                    <select className="flex-1 p-2 bg-white rounded-lg text-sm border" value={qForm.requisitoAssociato} onChange={e => setQForm({...qForm, requisitoAssociato: e.target.value})}>
-                                        <option value="">Nessun Requisito Auto</option>
-                                        {["AIB", "Logistica", "Sala Operativa", "Autista", "Soccorritore", "Radioamatore", "Formatore"].map(s => <option key={s} value={s}>{s}</option>)}
-                                    </select>
-                                </div>
-                                {qForm.tipo === 'scelta' && (
-                                    <div className="flex gap-2 mb-2">
-                                        <input type="text" placeholder="Opzione" className="flex-1 p-2 bg-white rounded-lg text-sm border" value={optInput} onChange={e => setOptionInput(e.target.value)} />
-                                        <button onClick={() => { if(optInput) { setQForm({...qForm, opzioni: [...qForm.opzioni, optInput]}); setOptionInput(''); } }} className="p-2 bg-blue-100 text-blue-600 rounded-lg"><Plus size={16}/></button>
-                                    </div>
-                                )}
-                                {qForm.opzioni.length > 0 && <div className="flex flex-wrap gap-1 mb-2">{qForm.opzioni.map((o, i) => <span key={i} className="px-2 py-1 bg-white border rounded text-xs">{o}</span>)}</div>}
-                                <button onClick={addQuestion} className="w-full py-2 bg-green-600 text-white rounded-lg font-bold text-xs uppercase">Aggiungi Domanda</button>
-                            </div>
-                            
-                            <div className="space-y-2">
-                                {moduleForm.domande.map((q, i) => (
-                                    <div key={i} className="flex justify-between items-center bg-white p-3 rounded-lg border shadow-sm">
-                                        <div>
-                                            <p className="font-bold text-sm">{q.testo}</p>
-                                            <p className="text-xs text-gray-500 uppercase">{q.tipo} {q.requisitoAssociato && `• Assegna: ${q.requisitoAssociato}`}</p>
-                                        </div>
-                                        <button onClick={() => removeQuestion(i)} className="text-red-500 hover:bg-red-50 p-2 rounded-lg"><Trash2 size={16}/></button>
-                                    </div>
-                                ))}
-                            </div>
-                        </div>
-
-                        <button onClick={saveModule} className="w-full py-3 bg-pcgl-blue text-white rounded-xl font-bold uppercase shadow-lg mt-4">Salva Modulo</button>
-                    </div>
-                </div>
-            </div>
-          )}
-
-          {/* MODALE DOCUMENTI MODULO */}
-          {activeModuleDocs && (
-            <div className="fixed inset-0 bg-black/50 z-[1600] flex items-center justify-center p-4 animate-in fade-in" onClick={() => setViewingDocsModuleId(null)}>
-                <div className="bg-white w-full max-w-md rounded-3xl p-6 shadow-2xl" onClick={e => e.stopPropagation()}>
-                    <h3 className="font-black text-xl text-pcgl-blue uppercase mb-4 border-b pb-2">Documenti {activeModuleDocs.nome}</h3>
-                    
-                    {canUploadDocs(activeModuleDocs) && (
-                        <div className="mb-4">
-                            <label className="flex items-center p-3 bg-gray-50 rounded-xl border border-gray-200 cursor-pointer hover:bg-gray-100 transition-colors">
-                                <Paperclip size={20} className="text-gray-400 mr-3"/>
-                                <span className="text-sm font-medium text-gray-500 truncate">{moduleDocFile ? moduleDocFile.name : "Carica Documento"}</span>
-                                <input type="file" className="hidden" onChange={(e) => setModuleDocFile(e.target.files[0])} />
-                            </label>
-                            <p className="text-[10px] text-gray-400 mt-1 ml-1">Dimensione massima file: 10MB</p>
-                            {moduleDocFile && <button onClick={handleUploadModuleDoc} disabled={uploadingDoc} className="w-full mt-2 py-2 bg-pcgl-blue text-white rounded-lg font-bold text-xs uppercase">{uploadingDoc ? 'Caricamento...' : 'Conferma Upload'}</button>}
-                        </div>
-                    )}
-
-                    <div className="space-y-2 max-h-60 overflow-y-auto">
-                        {(activeModuleDocs.documenti || []).map((doc, idx) => (
-                            <div key={idx} className="flex justify-between items-center bg-gray-50 p-3 rounded-xl border border-gray-100">
-                                <div className="overflow-hidden">
-                                    <a href={doc.url} target="_blank" rel="noopener noreferrer" className="flex items-center text-sm font-bold text-pcgl-blue hover:underline truncate">
-                                        <FileText size={16} className="mr-2 flex-shrink-0"/> <span className="truncate">{doc.nome}</span>
-                                    </a>
-                                    <div className="flex items-center mt-1 ml-6 space-x-3">
-                                        <p className="text-[10px] text-gray-400">Di {doc.autore} • {new Date(doc.data).toLocaleDateString()}</p>
-                                        <button onClick={() => setCommentingDoc(doc)} className="text-[10px] font-bold text-blue-500 flex items-center hover:underline"><MessageSquare size={12} className="mr-1"/> Commenti</button>
-                                    </div>
-                                </div>
-                                <div className="flex flex-col gap-1">
-                                    {(doc.uid === currentUser.uid || ['admin', 'superadmin'].includes(currentUser.ruolo) || activeModuleDocs.adminId === currentUser.uid) && (
-                                        <button onClick={() => handleDeleteModuleDoc(doc)} className="text-red-500 p-2 hover:bg-red-50 rounded-lg flex-shrink-0"><Trash2 size={16}/></button>
-                                    )}
-                                </div>
-                            </div>
-                        ))}
-                        {(activeModuleDocs.documenti || []).length === 0 && <p className="text-center text-gray-400 text-xs italic">Nessun documento caricato.</p>}
-                    </div>
-                    <button onClick={() => setViewingDocsModuleId(null)} className="w-full mt-4 py-3 bg-gray-200 text-gray-600 rounded-xl font-bold uppercase">Chiudi</button>
-                </div>
-            </div>
-          )}
-
-          {/* MODALE COMMENTI */}
-          {commentingDoc && (
-              <div className="fixed inset-0 bg-black/50 z-[1700] flex items-center justify-center p-4 animate-in fade-in" onClick={() => setCommentingDoc(null)}>
-                  <div className="bg-white w-full max-w-md rounded-3xl p-6 shadow-2xl h-[60vh] flex flex-col" onClick={e => e.stopPropagation()}>
-                      <h3 className="font-black text-lg text-pcgl-blue uppercase mb-2 border-b pb-2 truncate">Commenti: {commentingDoc.nome}</h3>
-                      <div className="flex-1 overflow-y-auto space-y-3 mb-4 p-2">
-                          {docComments.map((c, i) => (
-                              <div key={i} className={`p-2 rounded-lg text-xs ${c.uid === currentUser.uid ? 'bg-blue-50 ml-8' : 'bg-gray-50 mr-8'}`}>
-                                  <p className="font-bold text-gray-600 mb-1">{c.author}</p>
-                                  <p>{c.text}</p>
-                                  <span className="text-[9px] text-gray-400 block text-right mt-1">{new Date(c.date).toLocaleString()}</span>
-                              </div>
-                          ))}
-                      </div>
-                      <div className="flex gap-2"><input type="text" className="flex-1 p-2 border rounded-lg text-sm" value={newComment} onChange={e => setNewComment(e.target.value)} placeholder="Scrivi..." onKeyPress={e => e.key === 'Enter' && handleAddComment()} /><button onClick={handleAddComment} className="p-2 bg-pcgl-blue text-white rounded-lg"><Send size={16}/></button></div>
-                  </div>
-              </div>
-          )}
-
-          {/* MODALE CANDIDATURA */}
-          {applyingModule && (
-            <div className="fixed inset-0 bg-black/80 z-[1500] flex items-center justify-center p-4 animate-in fade-in">
-                <div className="bg-white w-full max-w-md rounded-3xl p-6 shadow-2xl relative">
-                    <button onClick={() => setApplyingModule(null)} className="absolute top-4 right-4 text-gray-400"><X/></button>
-                    <h3 className="font-black text-xl text-pcgl-blue uppercase mb-2">Candidatura {applyingModule.nome}</h3>
-                    <p className="text-sm text-gray-500 mb-6">Rispondi alle domande per inviare la richiesta.</p>
-                    
-                    <form onSubmit={submitApplication} className="space-y-4">
-                        {applyingModule.domande?.map(q => (
-                            <div key={q.id} className="bg-gray-50 p-3 rounded-xl border border-gray-200">
-                                <p className="font-bold text-sm text-gray-700 mb-2">{q.testo}</p>
-                                {q.tipo === 'booleano' && (
-                                    <div className="flex gap-2">
-                                        <button type="button" onClick={() => setApplicationAnswers({...applicationAnswers, [q.id]: true})} className={`flex-1 py-2 rounded-lg text-xs font-bold uppercase border ${applicationAnswers[q.id] === true ? 'bg-green-600 text-white border-green-600' : 'bg-white text-gray-500 border-gray-300'}`}>SÌ</button>
-                                        <button type="button" onClick={() => setApplicationAnswers({...applicationAnswers, [q.id]: false})} className={`flex-1 py-2 rounded-lg text-xs font-bold uppercase border ${applicationAnswers[q.id] === false ? 'bg-red-600 text-white border-red-600' : 'bg-white text-gray-500 border-gray-300'}`}>NO</button>
-                                    </div>
-                                )}
-                                {q.tipo === 'testo' && (
-                                    <input type="text" className="w-full p-2 border rounded-lg text-sm" placeholder={q.placeholder || "Risposta..."} onChange={e => setApplicationAnswers({...applicationAnswers, [q.id]: e.target.value})} />
-                                )}
-                                {q.tipo === 'scelta' && (
-                                    <select className="w-full p-2 border rounded-lg text-sm" onChange={e => setApplicationAnswers({...applicationAnswers, [q.id]: e.target.value})} defaultValue="">
-                                        <option value="" disabled>Seleziona...</option>
-                                        {q.opzioni?.map(opt => <option key={opt} value={opt}>{opt}</option>)}
-                                    </select>
-                                )}
-                            </div>
-                        ))}
-                        <button className="w-full py-3 bg-pcgl-blue text-white rounded-xl font-bold uppercase shadow-lg mt-4">Invia Candidatura</button>
-                    </form>
-                </div>
-            </div>
-          )}
-
-          {/* MODALE NOTIFICA */}
-          {notifModal && (
-            <div className="fixed inset-0 bg-black/50 z-[1600] flex items-center justify-center p-4 animate-in fade-in">
-                <div className="bg-white w-full max-w-md rounded-3xl p-6 shadow-2xl">
-                    <h3 className="font-black text-xl text-pcgl-blue uppercase mb-4">Comunicazione a {notifModal.moduleName}</h3>
-                    
-                    <div className="flex bg-gray-100 p-1 rounded-xl mb-4">
-                        <button onClick={() => setNotifMode('message')} className={`flex-1 py-2 rounded-lg text-xs font-bold uppercase ${notifMode === 'message' ? 'bg-white shadow-sm text-pcgl-blue' : 'text-gray-400'}`}>Messaggio</button>
-                        <button onClick={() => setNotifMode('form')} className={`flex-1 py-2 rounded-lg text-xs font-bold uppercase ${notifMode === 'form' ? 'bg-white shadow-sm text-pcgl-blue' : 'text-gray-400'}`}>Modulo Dati</button>
-                    </div>
-
-                    {notifMode === 'message' ? (
-                        <textarea className="w-full p-3 bg-gray-50 rounded-xl border mb-4 h-32" placeholder="Scrivi il messaggio..." value={notifText} onChange={e => setNotifText(e.target.value)}></textarea>
-                    ) : (
-                        <div className="space-y-3 mb-4 max-h-60 overflow-y-auto">
-                            <input type="text" placeholder="Titolo Richiesta (es. Disponibilità Sabato)" className="w-full p-2 border rounded-lg text-sm font-bold" value={formBuilder.title} onChange={e => setFormBuilder({...formBuilder, title: e.target.value})} />
-                            <div className="bg-gray-50 p-2 rounded-lg border">
-                                <p className="text-xs font-bold text-gray-400 mb-1">Aggiungi Domanda</p>
-                                <div className="flex gap-2 mb-2">
-                                    <input type="text" placeholder="Domanda" className="flex-1 p-1 text-sm border rounded" value={tempQuestion.text} onChange={e => setTempQuestion({...tempQuestion, text: e.target.value})} />
-                                    <select className="p-1 text-sm border rounded" value={tempQuestion.type} onChange={e => setTempQuestion({...tempQuestion, type: e.target.value})}><option value="text">Testo</option><option value="boolean">Sì/No</option></select>
-                                    <button onClick={() => { if(tempQuestion.text) { setFormBuilder(p => ({...p, questions: [...p.questions, tempQuestion]})); setTempQuestion({...tempQuestion, text: ''}); } }} className="bg-blue-500 text-white p-1 rounded"><Plus size={16}/></button>
-                                </div>
-                                <div className="space-y-1">{formBuilder.questions.map((q, i) => <div key={i} className="text-xs bg-white p-1 rounded border flex justify-between"><span>{q.text} ({q.type})</span><button onClick={() => setFormBuilder(p => ({...p, questions: p.questions.filter((_, idx) => idx !== i)}))} className="text-red-500"><X size={12}/></button></div>)}</div>
-                            </div>
-                        </div>
-                    )}
-
-                    <div className="flex gap-2"><button onClick={() => setNotifModal(null)} className="flex-1 py-3 bg-gray-200 rounded-xl font-bold uppercase">Annulla</button><button onClick={sendNotification} className="flex-1 py-3 bg-pcgl-blue text-white rounded-xl font-bold uppercase">{notifMode === 'message' ? 'Invia' : 'Crea & Invia'}</button></div>
-                </div>
-            </div>
-          )}
-
-          {/* MODALE COMPILAZIONE / VISUALIZZAZIONE FORM */}
-          {viewingForm && (
-            <div className="fixed inset-0 bg-black/50 z-[1600] flex items-center justify-center p-4 animate-in fade-in">
-                <div className="bg-white w-full max-w-md rounded-3xl p-6 shadow-2xl max-h-[80vh] overflow-y-auto">
-                    <h3 className="font-black text-xl text-pcgl-blue uppercase mb-4">{viewingForm.title}</h3>
-                    
-                    {viewingForm.isOwner ? (
-                        <div className="space-y-3">
-                            <h4 className="font-bold text-sm text-gray-500 uppercase">Risposte ({formResponses.length})</h4>
-                            {formResponses.map((res, i) => (
-                                <div key={i} className="bg-gray-50 p-3 rounded-xl border border-gray-200 text-sm">
-                                    <p className="font-bold text-pcgl-blue mb-1">{res.author}</p>
-                                    {Object.entries(res.answers).map(([qIdx, ans]) => (
-                                        <div key={qIdx} className="flex justify-between border-b border-gray-100 pb-1 mb-1 last:border-0">
-                                            <span className="text-gray-500">{viewingForm.questions[qIdx]?.text}:</span>
-                                            <span className="font-medium">{ans === true ? 'SÌ' : ans === false ? 'NO' : ans}</span>
-                                        </div>
-                                    ))}
-                                    <p className="text-[9px] text-gray-400 text-right mt-1">{new Date(res.date).toLocaleString()}</p>
-                                </div>
-                            ))}
-                        </div>
-                    ) : (
-                        <div className="space-y-4">
-                            {viewingForm.questions.map((q, i) => (
-                                <div key={i}>
-                                    <p className="text-sm font-bold text-gray-700 mb-2">{q.text}</p>
-                                    {q.type === 'boolean' ? <div className="flex gap-2"><button onClick={() => setFormAnswers({...formAnswers, [i]: true})} className={`flex-1 py-2 rounded border ${formAnswers[i] === true ? 'bg-green-600 text-white' : 'bg-white'}`}>SÌ</button><button onClick={() => setFormAnswers({...formAnswers, [i]: false})} className={`flex-1 py-2 rounded border ${formAnswers[i] === false ? 'bg-red-600 text-white' : 'bg-white'}`}>NO</button></div> : <input type="text" className="w-full p-2 border rounded" onChange={e => setFormAnswers({...formAnswers, [i]: e.target.value})} />}
-                                </div>
-                            ))}
-                            <button onClick={submitFormResponse} className="w-full py-3 bg-pcgl-blue text-white rounded-xl font-bold uppercase mt-4">Invia Risposta</button>
-                        </div>
-                    )}
-                    <button onClick={() => setViewingForm(null)} className="w-full mt-4 py-2 text-gray-400 font-bold uppercase text-xs">Chiudi</button>
-                </div>
-            </div>
-          )}
-
-          {/* PRINT LAYOUT (HIDDEN) */}
-          {printingModule && (
-              <div className="hidden print:block fixed inset-0 bg-white z-[2000] p-12 text-black font-sans">
-                  <h1 className="text-3xl font-black uppercase mb-2">Report Modulo: {printingModule.nome}</h1>
-                  <p className="text-sm text-gray-500 mb-8">Generato il {new Date().toLocaleDateString()}</p>
-                  <table className="w-full text-left text-sm border-collapse">
-                      <thead>
-                          <tr className="border-b-2 border-black"><th className="py-2">Cognome Nome</th><th className="py-2">Sede</th><th className="py-2">Telefono</th><th className="py-2">Email</th><th className="py-2">Specializzazioni</th></tr>
-                      </thead>
-                      <tbody>
-                          {printingModule.membri?.map(uid => {
-                              const u = getUserData(uid);
-                              if(!u) return null;
-                              return <tr key={uid} className="border-b border-gray-200"><td className="py-2 uppercase font-bold">{u.cognome} {u.nome}</td><td className="py-2">{u.sede}</td><td className="py-2">{u.telefono}</td><td className="py-2">{u.email}</td><td className="py-2 text-xs">{u.specializzazioni?.join(', ') || '-'}</td></tr>;
-                          })}
-                      </tbody>
-                  </table>
-                  <div className="fixed bottom-8 left-0 w-full text-center text-xs text-gray-400">PCGL.IT - Documento ad uso interno</div>
-              </div>
-          )}
-
-          {/* MODALE CONTATTI RAPIDI MEMBRO */}
-          {selectedMemberContact && (
-            <div className="fixed inset-0 bg-black/80 z-[1700] flex items-center justify-center p-4 animate-in fade-in" onClick={() => setSelectedMemberContact(null)}>
-                <div className="bg-white w-full max-w-sm rounded-3xl p-6 shadow-2xl relative" onClick={e => e.stopPropagation()}>
-                    <button onClick={() => setSelectedMemberContact(null)} className="absolute top-4 right-4 text-gray-400 hover:text-gray-600"><X size={24}/></button>
-                    
-                    <div className="text-center mb-6">
-                        <div className="w-20 h-20 mx-auto rounded-full bg-gray-100 border-2 border-pcgl-yellow shadow-md overflow-hidden mb-3 relative">
-                            {selectedMemberContact.fotoProfilo ? (
-                                <img src={selectedMemberContact.fotoProfilo} className="w-full h-full object-cover" alt={selectedMemberContact.nome} />
-                            ) : (
-                                <div className="w-full h-full flex items-center justify-center text-gray-300"><User size={32}/></div>
-                            )}
-                        </div>
-                        <h3 className="font-black text-xl text-pcgl-blue uppercase leading-tight">{selectedMemberContact.nome} {selectedMemberContact.cognome}</h3>
-                        <p className="text-xs font-bold text-gray-500 uppercase tracking-widest mt-1">{selectedMemberContact.ruolo} • {selectedMemberContact.sede}</p>
-                    </div>
-                    
-                    <div className="space-y-3">
-                        <div className="flex items-center justify-between p-3 bg-gray-50 rounded-xl border border-gray-100">
-                            <div className="flex items-center text-gray-500"><Phone size={16} className="mr-2"/><span className="font-bold uppercase text-xs">Telefono</span></div>
-                            <div className="flex items-center gap-3">
-                                <a href={`tel:${selectedMemberContact.telefono}`} className="font-bold text-pcgl-blue hover:underline text-sm">{selectedMemberContact.telefono || 'N/D'}</a>
-                                {selectedMemberContact.telefono && (
-                                    <a href={`https://wa.me/${selectedMemberContact.telefono.replace(/\s+/g, '')}`} target="_blank" rel="noopener noreferrer" className="text-green-500 hover:text-green-600 bg-green-50 p-1.5 rounded-full transition-colors"><MessageCircle size={18} /></a>
-                                )}
-                            </div>
-                        </div>
-                        <div className="flex items-center justify-between p-3 bg-gray-50 rounded-xl border border-gray-100">
-                            <div className="flex items-center text-gray-500"><Mail size={16} className="mr-2"/><span className="font-bold uppercase text-xs">Email</span></div>
-                            <a href={`mailto:${selectedMemberContact.email}`} className="font-bold text-pcgl-blue hover:underline text-sm truncate max-w-[150px]">{selectedMemberContact.email || 'N/D'}</a>
-                        </div>
-                        <div className="flex items-center justify-between p-3 bg-gray-50 rounded-xl border border-gray-100">
-                            <div className="flex items-center text-gray-500"><Activity size={16} className="mr-2"/><span className="font-bold uppercase text-xs">Gruppo</span></div>
-                            <span className="font-bold text-pcgl-blue text-sm">{selectedMemberContact.gruppoSanguigno || 'N/D'}</span>
-                        </div>
-                    </div>
-                    <button onClick={() => { setSelectedMemberContact(null); onViewVolunteer(selectedMemberContact); }} className="w-full mt-6 py-3 bg-pcgl-blue text-white rounded-xl font-bold uppercase shadow-md text-xs hover:bg-pcgl-yellow hover:text-pcgl-blue transition-colors">Vedi Profilo Completo</button>
-                </div>
-            </div>
-          )}
-      </div>
-  );
-};
-
 // --- CACHE KEYS ---
 const CACHE = {
   USER: 'pcgl_cache_user',
@@ -1118,15 +250,96 @@ const CACHE = {
   VEHICLES: 'pcgl_cache_vehicles'
 };
 
-// --- COMPONENTI UI ---
-const HeaderSub = ({ title, onBack }) => (
-  <div className="flex items-center mb-12 pt-6 w-full animate-in fade-in slide-in-from-left duration-500 font-sans text-pcgl-text-dark">
-    <button onClick={onBack} className="mr-4 md:mr-8 p-4 md:p-8 bg-white shadow-lg rounded-2xl text-pcgl-blue active:scale-90 border border-gray-100 transition-all hover:shadow-xl hover:bg-gray-50">
-      <ChevronLeft size={32} className="md:w-12 md:h-12" strokeWidth={3} />
-    </button>
-    <h2 className="text-3xl md:text-5xl font-black uppercase italic tracking-tighter text-pcgl-blue leading-none drop-shadow-md truncate">{title}</h2>
-  </div>
-);
+// --- COMPONENTE PUBBLICO: PRESA PRESENZE (NO LOGIN RICHIESTO) ---
+const PublicAttendance = ({ sessionId }) => {
+    const [sessionData, setSessionData] = useState(null);
+    const [loading, setLoading] = useState(true);
+    const [form, setForm] = useState({ nome: '', cognome: '', email: '', ente: 'PCGL', cf: '' });
+    const [sedePcgl, setSedePcgl] = useState('');
+    const [submitted, setSubmitted] = useState(false);
+    const [error, setError] = useState('');
+
+    useEffect(() => {
+        const unsub = onSnapshot(doc(db, 'registro_presenze', sessionId), (snap) => {
+            if (snap.exists()) {
+                setSessionData(snap.data());
+                setError('');
+            } else {
+                setError("Sessione di presenza non trovata o scaduta.");
+            }
+            setLoading(false);
+        }, (err) => {
+            console.error(err);
+            setError("Errore di connessione.");
+            setLoading(false);
+        });
+        return () => unsub();
+    }, [sessionId]);
+
+    const handleSubmit = async (e) => {
+        e.preventDefault();
+        if (!form.nome || !form.cognome || !form.email) return;
+        setLoading(true);
+        try {
+            await addDoc(collection(db, 'presenze_registrate'), {
+                sessionId,
+                sessionTitle: sessionData.titolo,
+                nome: form.nome.toUpperCase(),
+                cognome: form.cognome.toUpperCase(),
+                email: form.email.toLowerCase(),
+                cf: form.cf.toUpperCase(),
+                ente: form.ente,
+                sede: form.ente === 'PCGL' ? sedePcgl.toUpperCase() : 'N/D',
+                timestamp: new Date().toISOString(),
+                validato: false
+            });
+            setSubmitted(true);
+        } catch (err) {
+            console.error(err);
+            setError("Errore durante la registrazione. Riprova.");
+        } finally {
+            setLoading(false);
+        }
+    };
+
+    if (loading && !sessionData) return <div className="min-h-screen flex items-center justify-center bg-pcgl-bg-light"><div className="animate-spin rounded-full h-12 w-12 border-b-4 border-pcgl-blue"></div></div>;
+    
+    return (
+        <div className="min-h-screen bg-pcgl-bg-light flex flex-col items-center justify-center p-6 font-sans">
+            <div className="bg-white w-full max-w-md rounded-[2.5rem] p-8 shadow-2xl border-t-8 border-pcgl-blue text-center animate-in zoom-in duration-500">
+                <img src={APP_LOGO} alt="PCGL" className="w-20 h-20 mx-auto mb-4 drop-shadow-md"/>
+                {error ? (
+                    <div className="bg-red-50 p-4 rounded-xl text-red-600 font-bold uppercase">{error}</div>
+                ) : submitted ? (
+                    <div className="space-y-4">
+                        <div className="w-20 h-20 bg-green-100 text-green-600 rounded-full flex items-center justify-center mx-auto"><CheckCircle size={40}/></div>
+                        <h2 className="text-2xl font-black text-pcgl-blue uppercase">Presenza Registrata!</h2>
+                        <p className="text-gray-500 font-medium">Grazie {form.nome}, la tua presenza per <strong>{sessionData.titolo}</strong> è stata salvata con successo. Puoi chiudere questa pagina.</p>
+                    </div>
+                ) : (
+                    <form onSubmit={handleSubmit} className="space-y-4 text-left">
+                        <div className="text-center mb-6">
+                            <h2 className="text-xl font-black text-pcgl-blue uppercase leading-tight mb-1">Registro Presenze</h2>
+                            <p className="text-sm font-bold text-gray-500 bg-gray-100 p-2 rounded-lg inline-block">{sessionData.titolo}</p>
+                        </div>
+                        <input type="text" placeholder="Nome" className="w-full p-4 bg-gray-50 rounded-xl border border-gray-200 font-medium uppercase focus:border-pcgl-yellow" value={form.nome} onChange={e => setForm({...form, nome: e.target.value})} required />
+                        <input type="text" placeholder="Cognome" className="w-full p-4 bg-gray-50 rounded-xl border border-gray-200 font-medium uppercase focus:border-pcgl-yellow" value={form.cognome} onChange={e => setForm({...form, cognome: e.target.value})} required />
+                        <input type="email" placeholder="Indirizzo Email" className="w-full p-4 bg-gray-50 rounded-xl border border-gray-200 font-medium focus:border-pcgl-yellow" value={form.email} onChange={e => setForm({...form, email: e.target.value})} required />
+                        <input type="text" placeholder="Codice Fiscale (Opzionale)" className="w-full p-4 bg-gray-50 rounded-xl border border-gray-200 font-medium uppercase focus:border-pcgl-yellow" value={form.cf} onChange={e => setForm({...form, cf: e.target.value})} maxLength={16} />
+                        <select className="w-full p-4 bg-gray-50 rounded-xl border border-gray-200 font-medium font-bold text-pcgl-blue uppercase focus:border-pcgl-yellow" value={form.ente} onChange={e => setForm({...form, ente: e.target.value})}>
+                            <option value="PCGL">Volontario PC Gruppo Lucano</option>
+                            <option value="Esterno">Esterno / Altra Organizzazione</option>
+                        </select>
+                        {form.ente === 'PCGL' && (
+                            <input type="text" placeholder="Sede PCGL (es. POTENZA)" className="w-full p-4 bg-gray-50 rounded-xl border border-gray-200 font-medium uppercase focus:border-pcgl-yellow" value={sedePcgl} onChange={e => setSedePcgl(e.target.value)} required />
+                        )}
+                        <button disabled={loading} className="w-full py-4 bg-pcgl-blue text-pcgl-yellow rounded-xl font-black text-lg uppercase shadow-lg hover:bg-pcgl-yellow hover:text-pcgl-blue transition-all disabled:opacity-50">{loading ? 'Invio in corso...' : 'Conferma Presenza'}</button>
+                    </form>
+                )}
+            </div>
+        </div>
+    );
+};
 
 // --- COMPONENTE COMPLETAMENTO REGISTRAZIONE UTENTE ORFANO ---
 const OrphanUserCompletionScreen = ({ user, config }) => {
@@ -1134,7 +347,7 @@ const OrphanUserCompletionScreen = ({ user, config }) => {
         nome: '', cognome: '', dataNascita: '', luogoNascita: '', cf: '', sede: 'POTENZA', cfConfermato: false, privacyAccepted: false
     });
     const [error, setError] = useState('');
-    const sediDisponibili = config.sedi.map(s => s.s).sort();
+    const sediDisponibili = config.sedi.map(s => s.s).filter(s => s !== 'SEDE TEST FITTIZIA').sort();
 
     const handleSubmit = async (e) => {
         e.preventDefault();
@@ -1151,6 +364,17 @@ const OrphanUserCompletionScreen = ({ user, config }) => {
         const cfQuery = query(collection(db, 'users'), where('cf', '==', regForm.cf.toUpperCase()));
         const cfSnap = await getDocs(cfQuery);
         if (!cfSnap.empty) { setError("Codice Fiscale già registrato."); return; }
+
+        // CONFERMA DATI E SEDE
+        const confirmation = window.confirm(
+            `CONFERMA DATI PROFILO:\n\n` +
+            `Nome: ${regForm.nome.toUpperCase()}\n` +
+            `Cognome: ${regForm.cognome.toUpperCase()}\n` +
+            `SEDE SELEZIONATA: ${regForm.sede.toUpperCase()}\n\n` +
+            `ATTENZIONE: Verifica che la SEDE sia quella corretta dove presterai servizio. Molti utenti selezionano erroneamente "POTENZA".\n\n` +
+            `Procedere con il salvataggio?`
+        );
+        if (!confirmation) return;
 
         try {
             // CHIAMATA ALLA CLOUD FUNCTION (Server-Side)
@@ -1174,11 +398,34 @@ const OrphanUserCompletionScreen = ({ user, config }) => {
             });
             if (!response.ok) throw new Error("Errore server durante il salvataggio.");
             
-            alert("Profilo completato con successo!");
-            window.location.reload();
+            // ATTESA ATTIVA DEL DOCUMENTO (Evita race condition "Orfano" al reload)
+            const userDocRef = doc(db, 'users', user.uid);
+            let retries = 10; // Max 5 secondi di attesa
+            let docExists = false;
+
+            while (retries > 0) {
+                const snap = await getDoc(userDocRef);
+                if (snap.exists()) {
+                    docExists = true;
+                    break;
+                }
+                await new Promise(r => setTimeout(r, 500)); // Attendi 500ms
+                retries--;
+            }
+
+            if (docExists) {
+                alert("Profilo completato con successo!");
+                window.location.reload();
+            } else {
+                throw new Error("Timeout creazione profilo. Riprova o contatta l'assistenza.");
+            }
         } catch (err) {
             console.error("Errore completamento registrazione:", err);
+            if (err.message.includes("Codice Fiscale già registrato")) {
+                setError("Questo Codice Fiscale è già associato a un altro account. Prova a fare logout e rientrare con l'accesso corretto (es. Google o Email).");
+            } else {
             setError("Si è verificato un errore. Riprova: " + err.message);
+            }
         }
     };
 
@@ -1191,6 +438,13 @@ const OrphanUserCompletionScreen = ({ user, config }) => {
                 </div>
                 <div className="bg-white p-8 rounded-3xl shadow-card border border-gray-100">
                     <form onSubmit={handleSubmit} className="space-y-4">
+                        <div className="bg-orange-50 p-3 rounded-lg border border-orange-100 mb-4">
+                            <p className="text-[10px] text-orange-700 font-bold uppercase text-center">
+                                Se sei già un volontario attivo, potresti aver effettuato l'accesso con un account diverso. 
+                                <button type="button" onClick={() => signOut(auth)} className="ml-1 underline text-pcgl-blue">Clicca qui per uscire</button>
+                            </p>
+                        </div>
+
                         <p className="text-sm text-center bg-gray-50 p-3 rounded-lg">Email: <strong className="text-pcgl-blue">{user.email}</strong></p>
                         <div className="grid grid-cols-2 gap-4">
                           <input type="text" placeholder="NOME" className="p-4 bg-gray-50 rounded-xl border border-gray-200 font-medium text-sm uppercase" onChange={e => setRegForm({...regForm, nome: e.target.value})} required />
@@ -1345,6 +599,8 @@ const LiveMap = ({ participations }) => {
   const mapContainerRef = useRef(null);
   const mapInstanceRef = useRef(null);
   const markersRef = useRef({});
+  const pathsRef = useRef({});
+  const [showPaths, setShowPaths] = useState(false);
 
   useEffect(() => {
     const loadLeaflet = async () => {
@@ -1390,6 +646,10 @@ const LiveMap = ({ participations }) => {
         if (!activeUsers.find(p => p.uid === uid)) {
             map.removeLayer(markersRef.current[uid]);
             delete markersRef.current[uid];
+            if (pathsRef.current[uid]) {
+                map.removeLayer(pathsRef.current[uid]);
+                delete pathsRef.current[uid];
+            }
         }
     });
 
@@ -1405,10 +665,34 @@ const LiveMap = ({ participations }) => {
             markersRef.current[p.uid] = window.L.marker([lat, lng]).addTo(map).bindPopup(popupContent);
         }
         bounds.push([lat, lng]);
-    });
-  }, [participations]);
 
-  return <div ref={mapContainerRef} className="w-full h-full rounded-3xl shadow-inner border-2 border-gray-200 z-0" />;
+        if (showPaths && p.path && p.path.length > 0) {
+            const latlngs = p.path.map(pt => [pt.lat, pt.lng]);
+            const pathColor = isOnline ? '#3b82f6' : '#9ca3af'; // Blue se online, grigio se offline
+            
+            if (pathsRef.current[p.uid]) {
+                pathsRef.current[p.uid].setLatLngs(latlngs);
+                pathsRef.current[p.uid].setStyle({ color: pathColor });
+            } else {
+                pathsRef.current[p.uid] = window.L.polyline(latlngs, { color: pathColor, weight: 4, opacity: 0.8 }).addTo(map);
+            }
+        } else if (pathsRef.current[p.uid]) {
+            map.removeLayer(pathsRef.current[p.uid]);
+            delete pathsRef.current[p.uid];
+        }
+    });
+  }, [participations, showPaths]);
+
+  return (
+    <>
+        <div ref={mapContainerRef} className="w-full h-full rounded-3xl shadow-inner border-2 border-gray-200 z-0" />
+        <div className="absolute top-4 right-4 z-[400]">
+            <button onClick={() => setShowPaths(!showPaths)} className={`px-4 py-2 rounded-xl text-xs font-bold uppercase shadow-lg transition-all ${showPaths ? 'bg-pcgl-blue text-white border-2 border-white' : 'bg-white text-pcgl-blue border-2 border-pcgl-blue'}`}>
+                {showPaths ? 'Nascondi Tracciati' : 'Mostra Tracciati'}
+            </button>
+        </div>
+    </>
+  );
 };
 
 // --- COMPONENTE GUIDA INSTALLAZIONE PWA ---
@@ -1486,7 +770,7 @@ const InstallPWA = () => {
   );
 };
 
-const QrScanner = ({ onScan, onClose }) => {
+const QrScanner = ({ onScan, onClose, continuous = false }) => {
   useEffect(() => {
     if (!document.getElementById('html5-qrcode')) {
       const script = document.createElement("script");
@@ -1499,34 +783,45 @@ const QrScanner = ({ onScan, onClose }) => {
   }, []);
 
   useEffect(() => {
-    let scanner = null;
+    let html5QrCode = null;
+    let lastScannedText = null;
+    let lastScanTime = 0;
     
-    const startScanner = () => {
-      if (!window.Html5QrcodeScanner) return;
+    const startScanner = async () => {
+      if (!window.Html5Qrcode) return;
       
       try {
-          scanner = new window.Html5QrcodeScanner(
-            "reader", 
-            { 
-                fps: 10, 
-                qrbox: { width: 250, height: 250 },
-                aspectRatio: 1.0,
-                showTorchButtonIfSupported: true
-            }, 
-            false
-          );
+          html5QrCode = new window.Html5Qrcode("reader");
           
-          scanner.render((decodedText) => {
-            // Stop scanning after success
-            scanner.clear().then(() => {
-                onScan(decodedText);
-            }).catch((err) => {
-                console.error("Failed to clear scanner", err);
-                onScan(decodedText);
-            });
-          }, (error) => {
-            // Scanning...
-          });
+          const qrCodeSuccessCallback = (decodedText) => {
+            if (continuous) {
+                const now = Date.now();
+                if (decodedText !== lastScannedText || (now - lastScanTime > 3000)) {
+                    lastScannedText = decodedText;
+                    lastScanTime = now;
+                    onScan(decodedText, false);
+                }
+            } else {
+                if (html5QrCode && html5QrCode.isScanning) {
+                    html5QrCode.stop().then(() => {
+                        html5QrCode.clear();
+                        onScan(decodedText, true);
+                    }).catch((err) => {
+                        console.error("Failed to stop scanner", err);
+                        onScan(decodedText, true);
+                    });
+                } else {
+                    onScan(decodedText, true);
+                }
+            }
+          };
+
+          await html5QrCode.start(
+              { facingMode: "environment" }, 
+              { fps: 10, qrbox: { width: 250, height: 250 }, aspectRatio: 1.0 },
+              qrCodeSuccessCallback,
+              (errorMessage) => { /* ignora errori di scansione */ }
+          );
       } catch (e) {
           console.error("Scanner init error", e);
       }
@@ -1534,7 +829,7 @@ const QrScanner = ({ onScan, onClose }) => {
 
     // Wait for script load or DOM ready
     const timer = setTimeout(() => {
-        if (window.Html5QrcodeScanner) {
+        if (window.Html5Qrcode) {
             startScanner();
         } else {
             window.addEventListener('html5-qrcode-loaded', startScanner);
@@ -1544,8 +839,8 @@ const QrScanner = ({ onScan, onClose }) => {
     return () => {
       clearTimeout(timer);
       window.removeEventListener('html5-qrcode-loaded', startScanner);
-      if (scanner) {
-          scanner.clear().catch(e => console.error("Failed to clear scanner on unmount", e));
+      if (html5QrCode && html5QrCode.isScanning) {
+          html5QrCode.stop().then(() => html5QrCode.clear()).catch(e => console.error("Failed to stop scanner on unmount", e));
       }
     };
   }, []);
@@ -1870,14 +1165,21 @@ function AppContent() {
   const [attivazioniAttive, setAttivazioniAttive] = useState([]);
   const [newsFeed, setNewsFeed] = useState([]);
   const [corsiFormazione, setCorsiFormazione] = useState([]);
+  const [moodleCourses, setMoodleCourses] = useState([]);
+  const [moodleStatus, setMoodleStatus] = useState('idle'); // 'idle' | 'loading' | 'error' | 'success'
+  const [moodleErrorMsg, setMoodleErrorMsg] = useState('');
+  const [moodleUserFound, setMoodleUserFound] = useState(true);
   const [allUsers, setAllUsers] = useState([]); 
   const [mieIscrizioni, setMieIscrizioni] = useState([]);
   const [iscrittiAlCorso, setIscrittiAlCorso] = useState([]); 
+  const [selectedCourseReport, setSelectedCourseReport] = useState('');
   const [userDocuments, setUserDocuments] = useState([]);
   const [documentsFeed, setDocumentsFeed] = useState([]);
   const [hasNewDocs, setHasNewDocs] = useState(false);
   const [systemLogs, setSystemLogs] = useState([]);
   const [chatMessages, setChatMessages] = useState([]);
+  const [telegramUploads, setTelegramUploads] = useState([]);
+  const [leaderboard, setLeaderboard] = useState([]); // Classifica Gamification
   const [mezzi, setMezzi] = useState(() => {
     const cached = localStorage.getItem(CACHE.VEHICLES);
     return cached ? JSON.parse(cached) : [];
@@ -1889,6 +1191,7 @@ function AppContent() {
   const [participationStatus, setParticipationStatus] = useState('pending'); // pending, accepted, declined
   const [selectedZones, setSelectedZones] = useState([]);
   const [showMassMail, setShowMassMail] = useState(false);
+  const [syncingMoodle, setSyncingMoodle] = useState(false);
   const [massMailSubject, setMassMailSubject] = useState('');
   const [massMailBody, setMassMailBody] = useState('');
   const [newAlertSpec, setNewAlertSpec] = useState('');
@@ -1902,6 +1205,7 @@ function AppContent() {
   const [verifySearch, setVerifySearch] = useState('');
   const [verifyResult, setVerifyResult] = useState(null);
   const [toast, setToast] = useState(null);
+  const [isTelegramLinking, setIsTelegramLinking] = useState(false);
   const [currentMonth, setCurrentMonth] = useState(new Date());
   const [availabilities, setAvailabilities] = useState([]);
   const [selectedDayDetails, setSelectedDayDetails] = useState(null);
@@ -1915,11 +1219,13 @@ function AppContent() {
   const [newNewsExpiration, setNewNewsExpiration] = useState(''); // NUOVO: Scadenza news
   const [newNewsFile, setNewNewsFile] = useState(null); // NUOVO: File allegato news
   const [newNewsImportant, setNewNewsImportant] = useState(false); // NUOVO: Importanza news
+  const [newNewsTelegram, setNewNewsTelegram] = useState(true); // Integrazione Telegram
   const [showRejectionModal, setShowRejectionModal] = useState(false); // NUOVO: Modale rifiuto
   const [rejectionReason, setRejectionReason] = useState(''); // NUOVO: Motivo rifiuto
   const [volunteerToRejectId, setVolunteerToRejectId] = useState(null); // NUOVO: ID da rifiutare
   const [showScanner, setShowScanner] = useState(false);
   const [scannerMode, setScannerMode] = useState(null); // 'verify' | 'checkin'
+  const [showCameraPermissionModal, setShowCameraPermissionModal] = useState(false); // NUOVO
   const [hasNewNews, setHasNewNews] = useState(false);
   const [showAvailabilityModal, setShowAvailabilityModal] = useState(false);
   const [availabilityForm, setAvailabilityForm] = useState({ date: '', start: '08:00', end: '20:00', isEdit: false });
@@ -1948,6 +1254,57 @@ function AppContent() {
   const [sediList, setSediList] = useState([]);
   const [selectedSedeDetail, setSelectedSedeDetail] = useState(null);
   const [showPresidentGuide, setShowPresidentGuide] = useState(false);
+  const [showMoodleGuide, setShowMoodleGuide] = useState(false);
+  const [totalUsersCount, setTotalUsersCount] = useState(null);
+  const [showExportModal, setShowExportModal] = useState(false);
+  const [exportColumns, setExportColumns] = useState({
+      cognome: true, nome: true, cf: true, dataNascita: false, luogoNascita: false,
+      sede: true, stato: true, ruolo: true, specializzazioni: true, patenti: false,
+      email: true, telefono: true, indirizzo: false, citta: false, cap: false, gruppoSanguigno: false, ultimoAccesso: true
+  });
+  const [exportFilters, setExportFilters] = useState({ regione: '', citta: '' });
+  const [pendingAreaId, setPendingAreaId] = useState(null);
+
+  // --- STATI GESTIONE PRESENZE LIVE (NUOVI) ---
+  const [attendanceSessions, setAttendanceSessions] = useState([]);
+  const [selectedSession, setSelectedSession] = useState(null);
+  const [sessionRecords, setSessionRecords] = useState([]);
+  const [newSessionTitle, setNewSessionTitle] = useState('');
+  const [newSessionMode, setNewSessionMode] = useState('esterno');
+  const [newSessionType, setNewSessionType] = useState('corso');
+  const [newSessionRequireLocation, setNewSessionRequireLocation] = useState(false);
+  const [newSessionLocation, setNewSessionLocation] = useState(null);
+  const [showSessionLocationPicker, setShowSessionLocationPicker] = useState(false);
+  const [moodleCompareSessionId, setMoodleCompareSessionId] = useState(null);
+  const [moodleCompareRecords, setMoodleCompareRecords] = useState([]);
+
+  // --- STATI MOODLE AVANZATI ---
+  const [moodleEnrolledCourseIds, setMoodleEnrolledCourseIds] = useState([]);
+  const [moodleCourseReport, setMoodleCourseReport] = useState(null);
+  const [loadingMoodleReport, setLoadingMoodleReport] = useState(false);
+  const [moodleFilterSede, setMoodleFilterSede] = useState('');
+  const [moodleUserTypeFilter, setMoodleUserTypeFilter] = useState('');
+  const [moodleSortBy, setMoodleSortBy] = useState('name');
+  const [showMoodleMail, setShowMoodleMail] = useState(false);
+  const [moodleMailSubject, setMoodleMailSubject] = useState('');
+  const [moodleMailBody, setMoodleMailBody] = useState('');
+  
+  // --- STATI AREE TEMATICHE ---
+  const [areeTematiche, setAreeTematiche] = useState([]);
+  const [viewingArea, setViewingArea] = useState(null);
+  const [areaMessages, setAreaMessages] = useState([]);
+  const [showAreaModal, setShowAreaModal] = useState(false);
+  const [areaForm, setAreaForm] = useState({ id: null, titolo: '', descrizione: '', sediAbilitate: [], utentiAbilitati: [], linkDrive: '', immagineCopertina: '' });
+  const [newAreaMessage, setNewAreaMessage] = useState('');
+
+  const togglePinAreaMessage = async (msgId, currentPin) => {
+      try {
+          await updateDoc(doc(db, 'aree_tematiche', viewingArea.id, 'chat', msgId), { inEvidenza: !currentPin });
+          showToast(currentPin ? "Messaggio rimosso dall'evidenza." : "Messaggio messo in evidenza!");
+      } catch (e) { console.error(e); }
+  };
+
+  const prevAlertsRef = useRef([]);
 
   // --- STATI REPORT ORE ---
   const [hoursReportRange, setHoursReportRange] = useState({ 
@@ -1982,12 +1339,19 @@ function AppContent() {
   const [customForms, setCustomForms] = useState([]);
   const [formEditor, setFormEditor] = useState({ id: null, title: '', description: '', questions: [], expirationDate: '', responsibleId: null, responsibleName: '' });
   const [showFormEditorModal, setShowFormEditorModal] = useState(false);
-  const [newFormQuestion, setNewFormQuestion] = useState({ text: '', type: 'text', options: [], minDate: '', maxDate: '' });
+  const [newFormQuestion, setNewFormQuestion] = useState({ text: '', type: 'text', options: [], minDate: '', maxDate: '', required: false });
+  const [editingQuestionIndex, setEditingQuestionIndex] = useState(-1);
   const [tempOption, setTempOption] = useState('');
   const [viewingResponses, setViewingResponses] = useState(null);
   const [responsesList, setResponsesList] = useState([]);
+  const [showFormExportModal, setShowFormExportModal] = useState(false);
+  const [formExportColumns, setFormExportColumns] = useState({});
   const [newsFormId, setNewsFormId] = useState(''); // ID Modulo allegato alla news
   const [fillingForm, setFillingForm] = useState(null); // Modulo in compilazione (User)
+  const [previewSource, setPreviewSource] = useState(null); // Per gestire il back dall'anteprima
+  const [showCampiScuolaModal, setShowCampiScuolaModal] = useState(false);
+  const [editingResponseId, setEditingResponseId] = useState(null); // ID risposta in modifica
+
   const [fillingAnswers, setFillingAnswers] = useState({}); // Risposte utente
   const [responsibleSearch, setResponsibleSearch] = useState('');
   const [responsibleSearchResults, setResponsibleSearchResults] = useState([]);
@@ -1997,6 +1361,10 @@ function AppContent() {
   const userDataRef = useRef(userData);
   useEffect(() => { userDataRef.current = userData; }, [userData]);
 
+  // --- REF PER DRAG & DROP DOMANDE ---
+  const dragItem = useRef(null);
+  const dragOverItem = useRef(null);
+
   // --- STATI UTENTE ORFANO & RECUPERO ---
   const [isOrphanedUser, setIsOrphanedUser] = useState(false);
   const [editingOrphan, setEditingOrphan] = useState(null);
@@ -2004,6 +1372,10 @@ function AppContent() {
   
   // Ref per gestire il flusso di registrazione ed evitare race conditions
   const isRegistering = useRef(false);
+  const [customTelegramMessage, setCustomTelegramMessage] = useState('');
+  const [tgButtonText, setTgButtonText] = useState('');
+  const [tgButtonUrl, setTgButtonUrl] = useState('');
+  const [sendingTelegram, setSendingTelegram] = useState(false);
 
   // --- CONFIGURAZIONE DINAMICA (CRITICITÀ C) ---
   const [appConfig, setAppConfig] = useState({ 
@@ -2038,7 +1410,7 @@ function AppContent() {
   const [vehicleDocFile, setVehicleDocFile] = useState(null);
   const [selectedVehicle, setSelectedVehicle] = useState(null);
   const [openMovements, setOpenMovements] = useState([]); // NUOVO: Lista movimenti aperti
-  const [movementForm, setMovementForm] = useState({ mode: 'uscita', km: '', motivazione: '', note: '', spese: [], newSpesaTipo: 'carburante', newSpesaImporto: '' });
+  const [movementForm, setMovementForm] = useState({ mode: 'uscita', km: '', motivazione: '', note: '', spese: [], newSpesaTipo: 'carburante', newSpesaImporto: '', checklist: { carrozzeria: false, pneumatici: false, attrezzatura_dpi: false, livelli_carburante: false } });
   const [profileForm, setProfileForm] = useState({ telefono: '', indirizzo: '', citta: '', cap: '', gruppoSanguigno: '' });
 
   // --- STATI TURNISTICA AVANZATA ---
@@ -2089,6 +1461,7 @@ function AppContent() {
   const [reportText, setReportText] = useState('');
   const [currentLocation, setCurrentLocation] = useState(null);
   const [pendingForm, setPendingForm] = useState(null);
+  const [pendingNotification, setPendingNotification] = useState(null);
   const [pendingTab, setPendingTab] = useState('info');
   const [quizState, setQuizState] = useState({ q: 0, score: 0, finished: false });
   
@@ -2096,7 +1469,9 @@ function AppContent() {
     nome: '', cognome: '', dataNascita: '', luogoNascita: '', cf: '', sede: 'POTENZA', email: '', password: '', confirmPassword: '', cfConfermato: false, privacyAccepted: false
   });
 
-  const sediDisponibili = appConfig.sedi.map(s => s.s).sort();
+  const sediDisponibili = appConfig.sedi.map(s => s.s)
+    .filter(s => s !== 'SEDE TEST FITTIZIA' || userData?.ruolo === 'superadmin' || userData?.originalRuolo === 'superadmin')
+    .sort();
 
   // --- SISTEMA TOAST (NOTIFICHE INTERNE) ---
   const showToast = (message, type = 'success') => {
@@ -2191,6 +1566,19 @@ function AppContent() {
   useEffect(() => {
     let unsubscribes = [];
     const unsubscribeAuth = onAuthStateChanged(auth, async (currentUser) => {
+      // --- SICUREZZA: Cleanup su cambio utente ---
+      // 1. Rimuovi tutti i listener precedenti per evitare data leak tra sessioni.
+      unsubscribes.forEach(unsub => unsub());
+      unsubscribes = [];
+
+      // 2. Resetta gli stati critici per evitare flash di dati vecchi.
+      setUserData(null);
+      setAllUsers([]);
+      setPendingVolunteers([]);
+      setSystemLogs([]);
+      setCustomForms([]);
+      setMezzi([]);
+
       // Se stiamo registrando, ignoriamo l'aggiornamento auth per evitare falsi orfani
       if (isRegistering.current) return;
 
@@ -2200,7 +1588,27 @@ function AppContent() {
           const userDoc = await getDoc(doc(db, 'users', currentUser.uid));
           if (userDoc.exists()) {
             const data = userDoc.data();
+            
+            // --- SIMULAZIONE RUOLO SUPERADMIN ---
+            const simRole = localStorage.getItem('pcgl_simulated_role');
+            if (data.ruolo === 'superadmin') {
+                data.originalRuolo = 'superadmin';
+                data.originalSede = data.sede;
+                if (simRole) {
+                    data.ruolo = simRole;
+                    data.sede = 'SEDE TEST FITTIZIA';
+                }
+            } else {
+                localStorage.removeItem('pcgl_simulated_role');
+            }
+
             setUserData(data);
+            
+            // --- UPDATE ULTIMO ACCESSO ---
+            const lastAccess = data.ultimoAccesso ? new Date(data.ultimoAccesso) : new Date(0);
+            if (new Date() - lastAccess > 3600000) { // Aggiorna se è passata più di 1 ora dall'ultimo accesso
+               updateDoc(doc(db, 'users', currentUser.uid), { ultimoAccesso: new Date().toISOString() }).catch(e => console.error(e));
+            }
             
             unsubscribes.push(onSnapshot(collection(db, 'corsi'), s => setCorsiFormazione(s.docs.map(d => ({id: d.id, ...d.data()}))), e => console.log("Sync Corsi:", e.code)));
             unsubscribes.push(onSnapshot(query(collection(db, 'news'), orderBy('timestamp', 'desc')), s => {
@@ -2311,6 +1719,9 @@ function AppContent() {
               unsubscribes.push(onSnapshot(query(collection(db, 'custom_forms'), where('responsibleId', '==', currentUser.uid)), s => setCustomForms(s.docs.map(d => ({id: d.id, ...d.data()}))), e => console.warn("Custom forms resp sync error:", e)));
             }
 
+            // Sync Aree Tematiche
+            unsubscribes.push(onSnapshot(collection(db, 'aree_tematiche'), s => setAreeTematiche(s.docs.map(d => ({id: d.id, ...d.data()}))), e => console.error("Aree sync error", e)));
+
             if (data.ruolo === 'superadmin') {
               // FIX: Limite a 100 log per evitare costi eccessivi di lettura
               unsubscribes.push(onSnapshot(query(collection(db, 'logs'), orderBy('data', 'desc'), limit(100)), s => setSystemLogs(s.docs.map(d => ({id: d.id, ...d.data()}))), e => console.log("Sync Logs:", e.code)));
@@ -2392,8 +1803,8 @@ function AppContent() {
   }, [user, appVersion]);
 
   // --- GESTIONE CLICK NOTIFICHE ---
-  const handleNotificationClick = (data) => {
-      const currentData = userDataRef.current; // Usa il ref per avere dati aggiornati
+  const handleNotificationClick = (data, uData) => {
+      const currentData = uData || userDataRef.current; // Usa il ref per avere dati aggiornati o quelli passati al momento del click
       console.log("Notification Click Data:", data);
       if (!data) return;
       
@@ -2403,11 +1814,30 @@ function AppContent() {
           window.open(data.link, '_system');
       } else if (data.type === 'news') {
           setSubPage('news_view');
+          if (data.newsId) {
+              setTimeout(async () => {
+                  try {
+                      const snap = await getDoc(doc(db, 'news', data.newsId));
+                      if(snap.exists()) {
+                          setSelectedNews({ id: snap.id, ...snap.data() });
+                      }
+                  } catch (e) { console.error(e); }
+              }, 100);
+          }
       } else if (data.type === 'iscrizione' || (data.title && data.title.includes('Iscrizione'))) {
            if (['presidente', 'coordinamento', 'admin', 'superadmin'].includes(currentData?.ruolo)) {
                setSubPage('admin_search');
                setAnagraficaTab('pendenti');
            }
+      } else if (data.type === 'gestione_mezzi') {
+           setSubPage('gestione_mezzi');
+      } else if (data.type === 'area_tematica') {
+           if (data.areaId) {
+               setPendingAreaId(data.areaId);
+               setSubPage('progetti_view');
+           }
+      } else if (data.type === 'module_chat') {
+           setSubPage('modules_view');
       }
   };
 
@@ -2453,6 +1883,20 @@ function AppContent() {
     }
   }, [userData, attivazioniAttive, participationStatus, user]);
 
+  // --- SUONO E VIBRAZIONE ALLERTE IN-APP ---
+  useEffect(() => {
+    if (attivazioniAttive.length > 0) {
+      const newAlert = attivazioniAttive[0];
+      const isNew = !prevAlertsRef.current.find(a => a.id === newAlert.id);
+      const isRecent = Date.now() - new Date(newAlert.dataAttivazione).getTime() < 60000;
+      if (isNew && isRecent) {
+        playAlertAlarm();
+        triggerAlertHaptic();
+      }
+    }
+    prevAlertsRef.current = attivazioniAttive;
+  }, [attivazioniAttive]);
+
   // --- RESET NOTIFICA NEWS ---
   useEffect(() => {
     if (subPage === 'news_view') {
@@ -2490,6 +1934,31 @@ function AppContent() {
     }
     return () => { if (unsub) unsub(); };
   }, [selectedNews, user, userData]);
+
+  // --- GESTIONE DEEP LINK AREA TEMATICA ---
+  useEffect(() => {
+    if (pendingAreaId && areeTematiche.length > 0) {
+      const area = areeTematiche.find(a => a.id === pendingAreaId);
+      if (area) {
+        setViewingArea(area);
+        setSubPage('area_detail_view');
+        setPendingAreaId(null);
+      }
+    }
+  }, [pendingAreaId, areeTematiche]);
+
+  // --- SYNC MESSAGGI AREA TEMATICA ---
+  useEffect(() => {
+      if (viewingArea && viewingArea.id) {
+          const unsubMsg = onSnapshot(query(collection(db, 'aree_tematiche', viewingArea.id, 'chat'), orderBy('data', 'asc')), s => {
+              setAreaMessages(s.docs.map(d => ({id: d.id, ...d.data()})));
+          });
+          const unsubDoc = onSnapshot(doc(db, 'aree_tematiche', viewingArea.id), d => {
+              if (d.exists()) setViewingArea({id: d.id, ...d.data()});
+          });
+          return () => { unsubMsg(); unsubDoc(); };
+      }
+  }, [viewingArea?.id]);
 
   // --- GESTIONE PARTECIPAZIONE ALLERTA ---
   useEffect(() => {
@@ -2540,8 +2009,10 @@ function AppContent() {
                lastLocationUpdate.current = now;
                const { latitude, longitude } = position.coords;
                try {
+                 const locationData = { lat: latitude, lng: longitude, timestamp: new Date().toISOString() };
                  await updateDoc(doc(db, 'partecipazioni_allerta', `${activeAlertId}_${user.uid}`), {
-                   lastLocation: { lat: latitude, lng: longitude, timestamp: new Date().toISOString() }
+                   lastLocation: locationData,
+                   path: arrayUnion(locationData)
                  });
                } catch (e) { console.error("Tracking error", e); }
             }
@@ -2624,13 +2095,43 @@ function AppContent() {
           ]);
 
           let oggi = 'unknown', domani = 'unknown';
+
+          const processBulletin = (bulletinData, zoneData) => {
+              if (!bulletinData.data_emissione) {
+                  return { oggi: normalizeColor(zoneData.oggi), domani: normalizeColor(zoneData.domani) };
+              }
+              
+              const now = new Date();
+              let emissionDate = new Date(bulletinData.data_emissione);
+              
+              if (isNaN(emissionDate.getTime()) && typeof bulletinData.data_emissione === 'string') {
+                  const parts = bulletinData.data_emissione.split('/');
+                  if (parts.length === 3) {
+                      emissionDate = new Date(parts[2], parts[1] - 1, parts[0]);
+                  }
+              }
+              
+              if (isNaN(emissionDate.getTime())) {
+                  return { oggi: normalizeColor(zoneData.oggi), domani: normalizeColor(zoneData.domani) };
+              }
+              
+              const nowDateOnly = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+              const emissionDateOnly = new Date(emissionDate.getFullYear(), emissionDate.getMonth(), emissionDate.getDate());
+              
+              if (nowDateOnly.getTime() === emissionDateOnly.getTime()) {
+                  return { oggi: normalizeColor(zoneData.oggi), domani: normalizeColor(zoneData.domani) };
+              } else {
+                  return { oggi: normalizeColor(zoneData.domani), domani: 'unknown' };
+              }
+          };
+
           if (zona.startsWith('BASI') && resB.status === 'fulfilled' && resB.value?.zone?.[zona]) { 
-            oggi = normalizeColor(resB.value.zone[zona].oggi); 
-            domani = normalizeColor(resB.value.zone[zona].domani); 
+            const { oggi: o, domani: d } = processBulletin(resB.value, resB.value.zone[zona]);
+            oggi = o; domani = d;
           }
           else if (zona.startsWith('Cal') && resC.status === 'fulfilled' && resC.value?.zone_calabria?.[zona.split('-')[1]]) { 
-            oggi = normalizeColor(resC.value.zone_calabria[zona.split('-')[1]].oggi); 
-            domani = normalizeColor(resC.value.zone_calabria[zona.split('-')[1]].domani); 
+            const { oggi: o, domani: d } = processBulletin(resC.value, resC.value.zone_calabria[zona.split('-')[1]]);
+            oggi = o; domani = d;
           }
           else if (zona.startsWith('Camp') && resCampProxy.status === 'fulfilled' && resCampProxy.value.html) { 
             try {
@@ -2644,7 +2145,7 @@ function AppContent() {
       };
       fetchMeteo();
     }
-  }, [userData]);
+  }, [userData, appConfig.sedi]);
 
   // --- SYNC PROFILE FORM (ACTIVE USERS) ---
   useEffect(() => {
@@ -2657,7 +2158,7 @@ function AppContent() {
             gruppoSanguigno: userData.gruppoSanguigno || ''
         });
     }
-  }, [subPage, userData]);
+  }, [subPage]); // Rimosso userData per evitare di cancellare i dati mentre l'utente li sta digitando
 
   // --- SISTEMA NOTIFICHE PUSH (BROWSER) ---
   useEffect(() => {
@@ -2690,6 +2191,35 @@ function AppContent() {
     }
   }, [subPage, currentMonth, userData, user]);
 
+  // --- FETCH CORSI DA MOODLE ---
+  useEffect(() => {
+    const fetchMoodleCourses = async () => {
+      setMoodleStatus('loading');
+      setMoodleErrorMsg('');
+      
+      try {
+        const getMoodleCoursesFn = httpsCallable(getFunctions(auth.app, 'europe-west1'), 'getMoodleCoursesForUser');
+        const res = await getMoodleCoursesFn();
+        const data = res.data;
+        
+        if (data.success) {
+            setMoodleCourses(data.courses);
+            setMoodleEnrolledCourseIds(data.enrolledIds);
+            setMoodleUserFound(data.moodleUserFound);
+            setMoodleStatus('success');
+        } else {
+            setMoodleStatus('error');
+            setMoodleErrorMsg("Errore dal server proxy.");
+        }
+      } catch (err) {
+          console.error("Errore fetch Moodle proxy:", err);
+          setMoodleStatus('error');
+          setMoodleErrorMsg(err.message || "Errore di connessione.");
+      }
+    };
+    if (user && subPage === 'corsi_view') fetchMoodleCourses();
+  }, [user, subPage]);
+
   // --- CALCOLO STATISTICHE ---
   useEffect(() => {
     if (subPage === 'stats_view' && user) {
@@ -2706,6 +2236,13 @@ function AppContent() {
           counts.total++;
         });
         setStatsData(counts);
+
+        // Calcolo Classifica (Gamification)
+        const qUsers = query(collection(db, 'users'), where('stato', '==', 'attivo'));
+        const snapUsers = await getDocs(qUsers);
+        const usersList = snapUsers.docs.map(d => ({ nome: d.data().nome, cognome: d.data().cognome, sede: d.data().sede, corsi: d.data().fascicoloCorsi?.length || 0, badge: d.data().moduli?.length || 0, id: d.id }));
+        const ranked = usersList.map(u => ({ ...u, punti: (u.corsi * 10) + (u.badge * 50) })).sort((a,b) => b.punti - a.punti).slice(0, 10);
+        setLeaderboard(ranked);
       };
       fetchStats();
     }
@@ -2714,9 +2251,15 @@ function AppContent() {
   // --- SYNC STORICO VOLONTARIO (QUANDO SI APRE IL DETTAGLIO) ---
   useEffect(() => {
     if (subPage === 'volunteer_detail' && selectedVolunteer) {
-      const q = query(collection(db, 'partecipazioni_allerta'), where('uid', '==', selectedVolunteer.id), orderBy('checkIn', 'desc'));
+      const q = query(collection(db, 'partecipazioni_allerta'), where('uid', '==', selectedVolunteer.id));
       const unsub = onSnapshot(q, (s) => {
-        setVolunteerHistory(s.docs.map(d => ({ id: d.id, ...d.data() })));
+        const history = s.docs.map(d => ({ id: d.id, ...d.data() }));
+        history.sort((a, b) => {
+          const dateA = a.checkIn ? new Date(a.checkIn).getTime() : 0;
+          const dateB = b.checkIn ? new Date(b.checkIn).getTime() : 0;
+          return dateB - dateA;
+        });
+        setVolunteerHistory(history);
       }, (e) => console.log("History Sync Error:", e)); // Ignora errori se manca l'indice composto
       return () => unsub();
     }
@@ -2733,6 +2276,19 @@ function AppContent() {
         return () => unsub();
     }
   }, [subPage, userData]);
+
+  // --- SYNC RICEZIONI TELEGRAM ---
+  useEffect(() => {
+      if (['presidente', 'coordinamento', 'admin', 'superadmin'].includes(userData?.ruolo) && subPage === 'telegram_uploads_view') {
+          const q = query(collection(db, 'telegram_uploads'), orderBy('timestamp', 'desc'), limit(100));
+          const unsub = onSnapshot(q, s => {
+              let data = s.docs.map(d => ({id: d.id, ...d.data()}));
+              if (userData.ruolo === 'presidente') data = data.filter(d => d.userSede === userData.sede);
+              setTelegramUploads(data);
+          });
+          return () => unsub();
+      }
+  }, [userData, subPage]);
 
   // --- SYNC ANAGRAFICA SEDE ---
   useEffect(() => {
@@ -2781,6 +2337,56 @@ function AppContent() {
           return () => unsub();
       }
   }, [subPage, userData]);
+
+  // --- SYNC SESSIONI PRESENZE ---
+  useEffect(() => {
+      if (subPage === 'gestione_presenze') {
+          const q = query(collection(db, 'registro_presenze'), orderBy('dataCreazione', 'desc'));
+          const unsub = onSnapshot(q, (s) => {
+              setAttendanceSessions(s.docs.map(d => ({id: d.id, ...d.data()})));
+          }, e => console.error("Attendance sessions sync error:", e));
+          return () => unsub();
+      }
+  }, [subPage]);
+
+  // --- SYNC RECORD PRESENZE SELEZIONATE ---
+  useEffect(() => {
+      if (selectedSession) {
+          const q = query(collection(db, 'presenze_registrate'), where('sessionId', '==', selectedSession.id));
+          const unsub = onSnapshot(q, (s) => {
+              const records = s.docs.map(d => ({id: d.id, ...d.data()}));
+              records.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+              setSessionRecords(records);
+
+              // Arricchimento dati in background per sedi N/D o PCGL
+              records.forEach(async (r) => {
+                  if (!r.sede || r.sede === 'N/D' || r.sede.toUpperCase() === 'PCGL') {
+                      try {
+                          let userSnap;
+                          if (r.cf && r.cf !== 'N/D') {
+                              const qCf = query(collection(db, 'users'), where('cf', '==', r.cf.toUpperCase()));
+                              userSnap = await getDocs(qCf);
+                          }
+                          if ((!userSnap || userSnap.empty) && r.email) {
+                              const qEmail = query(collection(db, 'users'), where('email', '==', r.email.toLowerCase()));
+                              userSnap = await getDocs(qEmail);
+                          }
+                          
+                          if (userSnap && !userSnap.empty) {
+                              const foundSede = userSnap.docs[0].data().sede;
+                              if (foundSede && foundSede !== r.sede) {
+                                  await updateDoc(doc(db, 'presenze_registrate', r.id), { sede: foundSede });
+                              }
+                          }
+                      } catch (e) {
+                          console.error("Error enriching record", e);
+                      }
+                  }
+              });
+          }, e => console.error("Attendance records sync error:", e));
+          return () => unsub();
+      }
+  }, [selectedSession]);
 
   const saveSedeAnagrafica = async () => {
       setLoadingSedeAnagrafica(true);
@@ -2873,40 +2479,58 @@ function AppContent() {
     return false;
   };
 
-  // --- REGISTRAZIONE TOKEN FCM (AUTO-START SE GIÀ CONCESSE) ---
+  // --- REGISTRAZIONE LISTENER NATIVI FCM (AL MOUNT) ---
   useEffect(() => {
-    // Web Auto-Start
-    if (user && !Capacitor.isNativePlatform() && "Notification" in window && Notification.permission === 'granted') {
-      initializeNotifications();
-    }
-    
-    // Native Listeners (Capacitor)
-    if (user && Capacitor.isNativePlatform()) {
-        const registerListeners = async () => {
-            await PushNotifications.removeAllListeners();
+      if (Capacitor.isNativePlatform()) {
+          const registerListeners = async () => {
+              await PushNotifications.removeAllListeners();
+  
+              PushNotifications.addListener('registration', async (token) => {
+                  localStorage.setItem('pcgl_fcm_token', token.value);
+                  if (auth.currentUser) {
+                      updateDoc(doc(db, 'users', auth.currentUser.uid), { fcmToken: token.value }).catch(e => console.error(e));
+                  }
+              });
+  
+              PushNotifications.addListener('registrationError', (error) => {
+                  console.error('Error on FCM registration: ' + JSON.stringify(error));
+              });
+  
+              PushNotifications.addListener('pushNotificationActionPerformed', (notification) => {
+                  const data = notification.notification.data;
+                  if (userDataRef.current) {
+                      handleNotificationClick(data, userDataRef.current);
+                  } else {
+                      // Mette la notifica in attesa finchè l'utente non viene scaricato
+                      setPendingNotification(data);
+                  }
+              });
+          };
+          registerListeners();
+      }
+  }, []);
 
-            PushNotifications.addListener('registration', async (token) => {
-                await updateDoc(doc(db, 'users', user.uid), { fcmToken: token.value });
-            });
-
-            PushNotifications.addListener('registrationError', (error) => {
-                console.error('Error on registration: ' + JSON.stringify(error));
-            });
-
-            // Rimosso showToast per evitare doppia notifica su mobile (Sistema + Toast)
-            // PushNotifications.addListener('pushNotificationReceived', (notification) => {
-            //    showToast(notification.title || "Nuova Notifica");
-            // });
-
-            // GESTIONE CLICK SU NOTIFICA (BACKGROUND/CHIUSA) - FIX REDIRECT
-            PushNotifications.addListener('pushNotificationActionPerformed', (notification) => {
-                const data = notification.notification.data;
-                handleNotificationClick(data);
-            });
-        };
-        registerListeners();
+  // --- GESTIONE TOKEN POST-LOGIN E WEB AUTO-START ---
+  useEffect(() => {
+    if (user) {
+        if (!Capacitor.isNativePlatform() && "Notification" in window && Notification.permission === 'granted') {
+            initializeNotifications();
+        } else if (Capacitor.isNativePlatform()) {
+            const token = localStorage.getItem('pcgl_fcm_token');
+            if (token) {
+                updateDoc(doc(db, 'users', user.uid), { fcmToken: token }).catch(e => console.error(e));
+            }
+        }
     }
   }, [user]);
+
+  // --- ESECUZIONE NOTIFICA IN ATTESA ---
+  useEffect(() => {
+      if (userData && pendingNotification) {
+          handleNotificationClick(pendingNotification, userData);
+          setPendingNotification(null);
+      }
+  }, [userData, pendingNotification]);
 
   // --- GESTIONE NOTIFICHE FOREGROUND (APP APERTA) ---
   useEffect(() => {
@@ -2997,6 +2621,17 @@ function AppContent() {
     if (!regForm.cfConfermato) { setError("Conferma la validità del Codice Fiscale"); return; }
     if (regForm.cf.length !== 16) { setError("Codice Fiscale non valido"); return; }
     if (!regForm.privacyAccepted) { setError("Devi accettare l'informativa sulla privacy."); return; }
+
+    // CONFERMA DATI E SEDE
+    const confirmation = window.confirm(
+        `CONFERMA DATI DI ISCRIZIONE:\n\n` +
+        `Nome: ${regForm.nome.toUpperCase()}\n` +
+        `Cognome: ${regForm.cognome.toUpperCase()}\n` +
+        `SEDE SELEZIONATA: ${regForm.sede.toUpperCase()}\n\n` +
+        `ATTENZIONE: Assicurati che la SEDE sia quella dove effettivamente presterai servizio. Molti utenti selezionano erroneamente "POTENZA".\n\n` +
+        `I dati inseriti sono corretti?`
+    );
+    if (!confirmation) return;
 
     // Validazione Password
     if (regForm.password !== regForm.confirmPassword) { setError("Le password non coincidono."); return; }
@@ -3099,10 +2734,10 @@ function AppContent() {
     return `https://api.qrserver.com/v1/create-qr-code/?size=250x250&data=${encodeURIComponent(verifyUrl)}`;
   };
 
-  const handleScan = async (decodedText) => {
+  const handleScan = async (decodedText, closeOnScan = true) => {
     playScanSound();
     triggerHaptic();
-    setShowScanner(false);
+    if (closeOnScan) setShowScanner(false);
     try {
         const url = new URL(decodedText);
         const uid = url.searchParams.get('uid');
@@ -3124,11 +2759,63 @@ function AppContent() {
             }
         } else if (scannerMode === 'checkin') {
             await handleQrCheckIn(uid);
+        } else if (scannerMode === 'session_checkin') {
+            setLoading(true);
+            try {
+                const targetDoc = await getDoc(doc(db, 'users', uid));
+                if (targetDoc.exists()) {
+                    const uData = targetDoc.data();
+                    const qExist = query(collection(db, 'presenze_registrate'), where('sessionId', '==', selectedSession.id), where('cf', '==', uData.cf));
+                    const snapExist = await getDocs(qExist);
+                    if (!snapExist.empty) {
+                        showToast(`${uData.nome} ${uData.cognome} è già registrato.`, 'error');
+                    } else {
+                        await addDoc(collection(db, 'presenze_registrate'), {
+                            sessionId: selectedSession.id,
+                            sessionTitle: selectedSession.titolo,
+                            nome: uData.nome.toUpperCase(),
+                            cognome: uData.cognome.toUpperCase(),
+                            email: uData.email.toLowerCase(),
+                            cf: uData.cf.toUpperCase(),
+                            ente: 'PCGL',
+                            sede: uData.sede || 'N/D',
+                            timestamp: new Date().toISOString(),
+                            validato: true,
+                            verificato: true,
+                            distanza: 0
+                        });
+                        showToast(`Presenza registrata per ${uData.nome} ${uData.cognome}`);
+                    }
+                } else {
+                    showToast("Socio non trovato.", 'error');
+                }
+            } catch (err) {
+                console.error(err);
+                showToast("Errore durante la registrazione.", 'error');
+            } finally {
+                setLoading(false);
+            }
         }
     } catch (e) {
         console.error(e);
         showToast("Errore lettura QR Code.", 'error');
     }
+  };
+
+  const handleOpenScanner = async (mode) => {
+      setScannerMode(mode);
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+          showToast("La fotocamera non è supportata o connessione non sicura.", 'error');
+          return;
+      }
+      try {
+          const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+          stream.getTracks().forEach(track => track.stop());
+          setShowScanner(true);
+      } catch (err) {
+          console.error("Camera permission denied:", err);
+          setShowCameraPermissionModal(true);
+      }
   };
 
   const handleQrCheckIn = async (uid) => {
@@ -3189,8 +2876,9 @@ function AppContent() {
   useEffect(() => {
       if (userData && userData.stato === 'attivo') {
           const isIncomplete = !userData.telefono || !userData.indirizzo || !userData.citta || !userData.fotoProfilo || !userData.gruppoSanguigno;
-          // Mostra solo se non siamo già in modifica profilo
-          if (isIncomplete && subPage !== 'fascicolo_edit') {
+          const dismissed = sessionStorage.getItem('pcgl_profile_warning_dismissed');
+          // Mostra solo se non siamo già in modifica profilo e non è stato ignorato in questa sessione
+          if (isIncomplete && subPage !== 'fascicolo_edit' && !dismissed) {
               setShowProfileWarning(true);
           } else {
               setShowProfileWarning(false);
@@ -3390,6 +3078,134 @@ function AppContent() {
       }
   };
 
+  // --- CONTEGGIO TOTALE ISCRITTI ---
+  useEffect(() => {
+    if (subPage === 'admin_search' && userData) {
+        const fetchTotalCount = async () => {
+            try {
+                let q = collection(db, 'users');
+                if (userData.ruolo === 'presidente') {
+                    q = query(q, where('sede', '==', userData.sede), where('stato', 'in', ['attivo', 'sospeso']));
+                } else {
+                    q = query(q, where('stato', 'in', ['attivo', 'sospeso']));
+                }
+                const snap = await getCountFromServer(q);
+                setTotalUsersCount(snap.data().count);
+            } catch (e) {
+                console.error("Count error:", e);
+            }
+        };
+        fetchTotalCount();
+    }
+  }, [subPage, userData]);
+
+  const loadAllVolunteers = async () => {
+      if (!window.confirm("Caricare l'intera anagrafica potrebbe richiedere alcuni secondi. Continuare?")) return;
+      setLoading(true);
+      try {
+          const q = query(collection(db, 'users')); 
+          const snap = await getDocs(q);
+          const results = snap.docs.map(d => ({id: d.id, ...d.data()}));
+          setSearchedVolunteers(results);
+          showToast(`Anagrafica completa caricata (${results.length} utenti).`);
+      } catch(e) { console.error(e); showToast("Errore caricamento anagrafica", 'error'); } 
+      finally { setLoading(false); }
+  };
+
+  const executeCSVExport = async () => {
+      let volunteersToExport = [];
+      if (['admin', 'superadmin', 'coordinamento'].includes(userData.ruolo)) {
+          setLoading(true);
+          try {
+              const q = query(collection(db, 'users')); 
+              const snap = await getDocs(q);
+              volunteersToExport = snap.docs.map(d => ({id: d.id, ...d.data()}));
+          } catch(e) { 
+              console.error(e); 
+              showToast("Errore durante l'esportazione.", 'error'); 
+              setLoading(false);
+              return;
+          } 
+          setLoading(false);
+      } else {
+          volunteersToExport = anagraficaTab === 'pendenti' ? pendingVolunteers : allUsers;
+      }
+
+      const filtered = volunteersToExport.filter(v => {
+          const searchString = ((v.nome || '') + (v.cognome || '') + (v.sede || '')).toLowerCase();
+          const matchesSearch = searchString.includes(searchTerm.toLowerCase());
+          const matchesTab = anagraficaTab === 'iscritti' ? (filterStato === 'tutti' ? ['attivo', 'sospeso'].includes(v.stato) : v.stato === filterStato) : v.stato === 'pendente';
+          const matchesSede = userData.ruolo === 'presidente' ? v.sede === userData.sede : (filterSede ? v.sede === filterSede : true);
+          const matchesSpec = filterSpecializzazione ? v.specializzazioni?.includes(filterSpecializzazione) : true;
+          
+          let matchesExportCitta = true;
+          if (exportFilters.citta) {
+              matchesExportCitta = (v.citta || '').toLowerCase().includes(exportFilters.citta.toLowerCase());
+          }
+
+          let matchesExportRegione = true;
+          if (exportFilters.regione) {
+              const sedeInfo = appConfig.sedi.find(s => s.s === v.sede);
+              if (sedeInfo && sedeInfo.z) {
+                  matchesExportRegione = sedeInfo.z.toLowerCase().startsWith(exportFilters.regione.toLowerCase());
+              } else {
+                  matchesExportRegione = false;
+              }
+          }
+
+          return matchesSearch && matchesTab && matchesSede && matchesSpec && matchesExportCitta && matchesExportRegione;
+      });
+
+      if (filtered.length === 0) {
+          showToast("Nessun volontario da esportare.", 'error');
+          return;
+      }
+
+      const allPossibleColumns = [
+          { key: 'cognome', label: 'Cognome' },
+          { key: 'nome', label: 'Nome' },
+          { key: 'cf', label: 'Codice Fiscale' },
+          { key: 'dataNascita', label: 'Data di Nascita' },
+          { key: 'luogoNascita', label: 'Luogo di Nascita' },
+          { key: 'sede', label: 'Sede' },
+          { key: 'stato', label: 'Stato' },
+          { key: 'ruolo', label: 'Ruolo' },
+          { key: 'specializzazioni', label: 'Specializzazioni' },
+          { key: 'patenti', label: 'Patenti' },
+          { key: 'email', label: 'Email' },
+          { key: 'telefono', label: 'Telefono' },
+          { key: 'indirizzo', label: 'Indirizzo' },
+          { key: 'citta', label: 'Città' },
+          { key: 'cap', label: 'CAP' },
+          { key: 'gruppoSanguigno', label: 'Gruppo Sanguigno' },
+          { key: 'ultimoAccesso', label: 'Ultimo Accesso App' }
+      ];
+
+      const selectedCols = allPossibleColumns.filter(c => exportColumns[c.key]);
+      const headers = selectedCols.map(c => c.label);
+
+      const rows = filtered.map(v => selectedCols.map(c => {
+          if (c.key === 'specializzazioni' || c.key === 'patenti') {
+              return v[c.key] ? v[c.key].join(", ") : "";
+          }
+          if (c.key === 'ultimoAccesso') {
+              return v[c.key] ? new Date(v[c.key]).toLocaleString() : "Mai Entrato";
+          }
+          return v[c.key] || "";
+      }));
+
+      const csvContent = "data:text/csv;charset=utf-8," + [headers.join(","), ...rows.map(e => `"${e.join('","')}"`)].join("\n");
+      const encodedUri = encodeURI(csvContent);
+      const link = document.createElement("a");
+      link.setAttribute("href", encodedUri);
+      link.setAttribute("download", `volontari_pcgl_${new Date().toISOString().split('T')[0]}.csv`);
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      showToast("Esportazione completata.");
+      setShowExportModal(false);
+  };
+
   // --- GESTIONE STATO UTENTE (ATTIVO/SOSPESO) ---
   const toggleUserStatus = async (uid, currentStatus) => {
       const newStatus = currentStatus === 'attivo' ? 'sospeso' : 'attivo';
@@ -3465,6 +3281,16 @@ function AppContent() {
 
       const targetName = targetUser ? `${targetUser.nome} ${targetUser.cognome}` : id;
       await logAction("APPROVAZIONE", `Volontario ${targetName} attivato con ruolo ${role.toUpperCase()}`);
+      
+      // TRIGGER AUTOMATICO SINCRONIZZAZIONE MOODLE ALL'APPROVAZIONE (Sfondo)
+      try {
+          const authToken = await auth.currentUser.getIdToken();
+          fetch('https://europe-west1-pcgl-volontari.cloudfunctions.net/syncExistingUsersToMoodle', {
+              method: 'POST',
+              headers: { 'Authorization': `Bearer ${authToken}` }
+          }).catch(e => console.warn("Auto-sync Moodle fail:", e));
+      } catch (err) { console.error("Moodle sync trigger error", err); }
+
       showToast(`Utente approvato come ${role.toUpperCase()}`);
     } catch (error) {
       console.error("Errore approvazione:", error);
@@ -3577,12 +3403,15 @@ function AppContent() {
     }
 
     setUploading(true);
+    // Il path DEVE essere esattamente il UID per rispettare le regole di sicurezza di Firebase
     const storageRef = ref(storage, `profile_pictures/${user.uid}`);
     try {
       await uploadBytes(storageRef, file);
       const downloadURL = await getDownloadURL(storageRef);
-      await updateDoc(doc(db, 'users', user.uid), { fotoProfilo: downloadURL });
-      if(userData.stato === 'pendente') setPendingForm({...pendingForm, fotoProfilo: downloadURL});
+      // Aggiungiamo il timestamp all'URL scaricato per aggirare la cache locale del browser/app
+      const cacheBustedUrl = `${downloadURL}&v=${Date.now()}`;
+      await updateDoc(doc(db, 'users', user.uid), { fotoProfilo: cacheBustedUrl });
+      if(userData.stato === 'pendente') setPendingForm({...pendingForm, fotoProfilo: cacheBustedUrl});
       showToast("Foto profilo aggiornata!");
     } catch (err) { setError("Errore caricamento foto: " + err.message); } 
     finally { setUploading(false); }
@@ -3701,6 +3530,113 @@ function AppContent() {
     }
   };
 
+  const handleSyncMoodle = async () => {
+      if (!window.confirm("Attenzione: Vuoi sincronizzare tutti i volontari ATTIVI su Moodle? L'operazione potrebbe richiedere alcuni minuti se ci sono molti iscritti.")) return;
+      setSyncingMoodle(true);
+      try {
+          const token = await auth.currentUser.getIdToken();
+          const response = await fetch('https://europe-west1-pcgl-volontari.cloudfunctions.net/syncExistingUsersToMoodle', {
+              method: 'POST',
+              headers: { 'Authorization': `Bearer ${token}` }
+          });
+          const result = await response.json();
+          if (response.ok) {
+              let msg = `Sinc. completata! Aggiornati: ${result.synced}. Falliti: ${result.failedOrSkipped}.`;
+              if (result.failedOrSkipped > 0 && result.error) msg += ` (Errore: ${result.error})`;
+              showToast(msg, result.failedOrSkipped > 0 ? 'error' : 'success');
+          } else {
+              showToast("Errore: " + result.error, "error");
+          }
+      } catch (e) {
+          showToast("Errore di connessione durante la sincronizzazione.", "error");
+      } finally {
+          setSyncingMoodle(false);
+      }
+  };
+
+  const sendMoodleCommunication = async () => {
+      if (!moodleCourseReport || !moodleMailSubject || !moodleMailBody) return;
+      const filteredUsers = moodleCourseReport.users.filter(u => !moodleFilterSede || (u.department || 'N/D') === moodleFilterSede);
+      const emails = filteredUsers.map(u => u.email).filter(e => e);
+      
+      if (emails.length === 0) { showToast("Nessun destinatario valido.", 'error'); return; }
+      
+      try {
+        await addDoc(collection(db, 'mail'), {
+          to: emails,
+          message: {
+            subject: `[Corsi PCGL] ${moodleMailSubject}`,
+            text: moodleMailBody,
+            html: moodleMailBody.replace(/\n/g, '<br>')
+          }
+        });
+        showToast(`Messaggio inviato a ${emails.length} iscritti.`);
+        setShowMoodleMail(false); setMoodleMailSubject(''); setMoodleMailBody('');
+      } catch (e) { console.error(e); showToast("Errore invio.", 'error'); }
+  };
+
+  // --- RECUPERO REPORT ISCRITTI MOODLE (ADMIN/COORD) ---
+  const handleMoodleCourseReport = async (course) => {
+      setLoadingMoodleReport(true);
+      try {
+              const getReportFn = httpsCallable(getFunctions(auth.app, 'europe-west1'), 'getMoodleCourseReport');
+              const res = await getReportFn({ courseId: course.id });
+              const data = res.data.users;
+
+          if (Array.isArray(data)) {
+              // Arricchiamo i dati Moodle con l'informazione se l'utente è presente nell'app
+              const moodleEmails = data.map(u => u.email).filter(Boolean);
+              const appUsersMap = new Map();
+
+              if (moodleEmails.length > 0) {
+                  const chunkSize = 30; // Limite 'in' di Firestore
+                  for (let i = 0; i < moodleEmails.length; i += chunkSize) {
+                      const chunk = moodleEmails.slice(i, i + chunkSize);
+                      const q = query(collection(db, 'users'), where('email', 'in', chunk));
+                      const snapshot = await getDocs(q);
+                      snapshot.forEach(doc => {
+                          const d = doc.data();
+                          appUsersMap.set(d.email.toLowerCase(), d);
+                      });
+                  }
+              }
+
+              const augmentedUsers = data.map(u => {
+                  let appartenenza = null;
+                  if (u.customfields && Array.isArray(u.customfields)) {
+                      const appField = u.customfields.find(f => f.shortname === 'appartenenza' || f.type === 'appartenenza');
+                      if (appField) appartenenza = appField.value;
+                  }
+                  
+                  const firestoreUser = appUsersMap.get((u.email || '').toLowerCase());
+                  let finalDepartment = u.department;
+                  
+                  if (firestoreUser && (!finalDepartment || finalDepartment === 'N/D' || finalDepartment.toUpperCase() === 'PCGL')) {
+                      finalDepartment = firestoreUser.sede;
+                  }
+
+                  return {
+                      ...u,
+                      department: finalDepartment,
+                      isAppUser: !!firestoreUser,
+                      appartenenza
+                  };
+              });
+
+              setMoodleCourseReport({ courseName: course.fullname, users: augmentedUsers });
+          } else if (data && data.exception) {
+              console.error("Eccezione API Moodle:", data);
+              showToast(`Errore Moodle (${data.errorcode}): ${data.message}`, "error");
+          } else {
+              showToast("Risposta API non valida da Moodle.", "error");
+          }
+      } catch (e) {
+          showToast("Errore di connessione a Moodle.", "error");
+      } finally {
+          setLoadingMoodleReport(false);
+      }
+  };
+
   const calculateServiceHours = async () => {
     if (!hoursReportRange.start || !hoursReportRange.end) {
         showToast("Seleziona un intervallo di date.", 'error');
@@ -3749,6 +3685,206 @@ function AppContent() {
     }
   };
 
+  // --- FUNZIONI GESTIONE PRESENZE LIVE ---
+  const createAttendanceSession = async () => {
+      if (!newSessionTitle.trim()) {
+          showToast("Inserisci un titolo per la sessione.", 'error');
+          return;
+      }
+      try {
+          await addDoc(collection(db, 'registro_presenze'), {
+              titolo: newSessionTitle.toUpperCase(),
+              dataCreazione: new Date().toISOString(),
+              creatore: `${userData.nome} ${userData.cognome}`,
+              creatoreUid: user.uid,
+              sede: userData.sede,
+              isPaused: false,
+              isClosed: false,
+              mode: newSessionMode,
+              tipo: newSessionType,
+              requireLocation: newSessionRequireLocation,
+              posizione: newSessionRequireLocation ? newSessionLocation : null
+          });
+          setNewSessionTitle('');
+          setNewSessionMode('esterno');
+          setNewSessionType('corso');
+          setNewSessionRequireLocation(false);
+          setNewSessionLocation(null);
+          showToast("Sessione creata con successo!");
+      } catch (e) {
+          console.error(e);
+          showToast("Errore durante la creazione della sessione.", 'error');
+      }
+  };
+
+  const deleteAttendanceSession = async (id) => {
+      if (!window.confirm("Sei sicuro di voler eliminare questa sessione? I dati di presenza andranno persi.")) return;
+      try {
+          await deleteDoc(doc(db, 'registro_presenze', id));
+          setSelectedSession(null);
+          showToast("Sessione eliminata.");
+      } catch (e) {
+          console.error(e);
+          showToast("Errore durante l'eliminazione.", 'error');
+      }
+  };
+
+  const togglePresenceValidation = async (id, currentStatus) => {
+      try {
+          await updateDoc(doc(db, 'presenze_registrate', id), {
+              validato: !currentStatus
+          });
+          showToast(!currentStatus ? "Presenza validata!" : "Validazione annullata.");
+      } catch (e) {
+          console.error(e);
+          showToast("Errore durante l'aggiornamento.", 'error');
+      }
+  };
+
+  const toggleSessionPause = async (session) => {
+      const newStatus = !session.isPaused;
+      let message = "";
+      if (newStatus) {
+          const promptMsg = window.prompt("Inserisci un messaggio da mostrare a chi scansiona il QR Code:", "Le registrazioni sono momentaneamente chiuse.");
+          if (promptMsg === null) return;
+          message = promptMsg;
+      }
+      try {
+          await updateDoc(doc(db, 'registro_presenze', session.id), {
+              isPaused: newStatus,
+              messaggioPausa: message,
+              pauseHistory: arrayUnion({
+                  isPaused: newStatus,
+                  timestamp: new Date().toISOString(),
+                  autore: `${userData.nome} ${userData.cognome}`,
+                  messaggio: message
+              })
+          });
+          await logAction("GESTIONE PRESENZE", `Sessione "${session.titolo}" ${newStatus ? "messa in pausa" : "riattivata"}`);
+          showToast(newStatus ? "Registrazioni in pausa." : "Registrazioni riattivate!");
+      } catch (e) {
+          console.error(e);
+          showToast("Errore durante l'aggiornamento.", 'error');
+      }
+  };
+
+  const closeAttendanceSession = async (session) => {
+      if (!window.confirm("Chiudere definitivamente questa sessione? Non sarà più possibile registrarsi.")) return;
+      try {
+          await updateDoc(doc(db, 'registro_presenze', session.id), { isClosed: true });
+          await logAction("GESTIONE PRESENZE", `Sessione "${session.titolo}" chiusa definitivamente`);
+          showToast("Sessione chiusa definitivamente!");
+      } catch (e) {
+          console.error(e);
+          showToast("Errore durante la chiusura.", 'error');
+      }
+  };
+
+  // --- FUNZIONI AREE TEMATICHE ---
+  const saveArea = async () => {
+      if (!areaForm.titolo) return;
+      try {
+          if (areaForm.id) {
+              const { id, ...data } = areaForm;
+              await updateDoc(doc(db, 'aree_tematiche', id), data);
+              showToast("Progetto aggiornato!");
+          } else {
+              const { id, ...data } = areaForm;
+              await addDoc(collection(db, 'aree_tematiche'), { ...data, documenti: [], createdAt: new Date().toISOString() });
+              showToast("Progetto creato!");
+          }
+          setShowAreaModal(false);
+      } catch (e) { console.error(e); showToast("Errore salvataggio.", "error"); }
+  };
+
+  const deleteArea = async (id) => {
+      if (window.confirm("Sei sicuro di voler eliminare questo progetto?")) {
+          await deleteDoc(doc(db, 'aree_tematiche', id));
+          showToast("Progetto eliminato.");
+      }
+  };
+
+  const uploadAreaDoc = async (file) => {
+      if (!file || !viewingArea) return;
+      if (file.size > 15 * 1024 * 1024) { showToast("File troppo grande (Max 15MB)", "error"); return; }
+      setUploading(true);
+      try {
+          const storageRef = ref(storage, `aree_tematiche_docs/${viewingArea.id}/${Date.now()}_${file.name}`);
+          await uploadBytes(storageRef, file);
+          const url = await getDownloadURL(storageRef);
+          await updateDoc(doc(db, 'aree_tematiche', viewingArea.id), {
+              documenti: arrayUnion({ nome: file.name, url, autore: `${userData.nome} ${userData.cognome}`, data: new Date().toISOString() })
+          });
+          showToast("Documento caricato!");
+      } catch (e) { console.error(e); showToast("Errore caricamento.", "error"); }
+      finally { setUploading(false); }
+  };
+
+  const deleteAreaDoc = async (docData) => {
+      if (window.confirm("Eliminare questo documento?")) {
+          await updateDoc(doc(db, 'aree_tematiche', viewingArea.id), { documenti: arrayRemove(docData) });
+      }
+  };
+
+  const sendAreaMessage = async () => {
+      if (!newAreaMessage.trim() || !viewingArea) return;
+      try { await addDoc(collection(db, 'aree_tematiche', viewingArea.id, 'chat'), { testo: newAreaMessage, autore: `${userData.nome} ${userData.cognome}`, sede: userData.sede, uid: user.uid, data: new Date().toISOString() }); setNewAreaMessage(''); } catch (e) { console.error(e); }
+  };
+
+  const deleteAreaMessage = async (msgId) => {
+      if (window.confirm("Eliminare questo messaggio?")) { await deleteDoc(doc(db, 'aree_tematiche', viewingArea.id, 'chat', msgId)); }
+  };
+
+  const sendAreaMeetingNotification = async () => {
+      if (!viewingArea) return;
+      const dataRiunione = window.prompt("Quando si terrà la riunione e dove? (Es. Domani alle 18:30 in Sede Centrale)");
+      if (!dataRiunione) return;
+      
+      const msg = `📢 CONVOCAZIONE RIUNIONE\nSi avvisano i membri iscritti che è prevista una riunione per il progetto.\nDettagli: ${dataRiunione}`;
+      try { 
+          await addDoc(collection(db, 'aree_tematiche', viewingArea.id, 'chat'), { 
+              testo: msg, 
+              autore: `${userData.nome} ${userData.cognome}`, 
+              sede: userData.sede, 
+              uid: user.uid, 
+              data: new Date().toISOString(),
+              tipo: 'riunione'
+          }); 
+          showToast("Convocazione inviata e notificata!");
+      } catch (e) { console.error(e); }
+  };
+
+  const [extraUsers, setExtraUsers] = useState({});
+  const [areaUserSearch, setAreaUserSearch] = useState('');
+  const [areaUserResults, setAreaUserResults] = useState([]);
+
+  const getUserData = (uid) => allUsers.find(u => u.id === uid) || extraUsers[uid];
+  const getName = (uid) => {
+      const u = getUserData(uid);
+      return u ? `${u.nome} ${u.cognome}` : "Utente Sconosciuto";
+  };
+
+  useEffect(() => {
+      const fetchMissingUsers = async () => {
+          const uidsToFetch = new Set();
+          areeTematiche.forEach(a => { if (a.utentiAbilitati) a.utentiAbilitati.forEach(uid => uidsToFetch.add(uid)); });
+          const missing = [...uidsToFetch].filter(uid => uid && !allUsers.find(u => u.id === uid) && !extraUsers[uid]);
+          for (const uid of missing) {
+              try { const snap = await getDoc(doc(db, 'users', uid)); if (snap.exists()) setExtraUsers(prev => ({...prev, [uid]: {id: uid, ...snap.data()}})); } catch(e) {}
+          }
+      };
+      fetchMissingUsers();
+  }, [areeTematiche, allUsers]);
+
+  const searchAreaUser = async () => {
+      if (!areaUserSearch || areaUserSearch.length < 3) return;
+      const q = query(collection(db, 'users'), where('cognome', '>=', areaUserSearch.toUpperCase()), where('cognome', '<=', areaUserSearch.toUpperCase() + '\uf8ff'), limit(5));
+      const snap = await getDocs(q);
+      const results = snap.docs.map(d => ({id: d.id, ...d.data()}));
+      setAreaUserResults(results);
+      setExtraUsers(prev => { const next = {...prev}; results.forEach(r => next[r.id] = r); return next; });
+  };
+
   // --- FUNZIONI ADMIN (NEWS, RISORSE, ALLERTE) ---
   const handleSaveNews = async () => {
     if (!newNewsTitle || !newNewsContent) return;
@@ -3770,6 +3906,7 @@ function AppContent() {
         link: newNewsLink,
         dataScadenza: scadenza,
         importante: newNewsImportant,
+        inviaTelegram: newNewsTelegram,
         visibilita: newNewsVisibility,
         targetRuolo: newNewsVisibility === 'pubblica' ? null : newNewsTargetRole,
         targetSede: newNewsVisibility === 'pubblica' ? null : newNewsTargetSede,
@@ -3801,6 +3938,7 @@ function AppContent() {
     setNewNewsTargetRole('tutti');
     setNewNewsTargetSede('tutte');
     setNewsFormId('');
+    setNewNewsTelegram(true);
   };
 
   const handleEditNews = (news) => {
@@ -3815,15 +3953,41 @@ function AppContent() {
       setNewNewsTargetSede(news.targetSede || 'tutte');
       setNewNewsExpiration(news.dataScadenza ? news.dataScadenza.split('T')[0] : '');
       setNewNewsImportant(news.importante || false);
+      setNewNewsTelegram(news.inviaTelegram !== false);
       setNewsFormId(news.formId || '');
       window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
   const deleteNews = async (id) => { if(!id) return; await deleteDoc(doc(db, 'news', id)); showToast("News eliminata!"); };
 
+  const shareNewsToTelegram = async (news) => {
+      if (!window.confirm(`Vuoi inoltrare la news "${news.titolo}" sul canale Telegram ufficiale?`)) return;
+      
+      const testoMessaggio = news.testoBreve || news.contenuto || news.testo || "";
+      const channelText = `📰 <b>${escapeHtml(news.titolo)}</b>\n\n${escapeHtml(testoMessaggio)}`;
+      
+      try {
+          const sendCustomTelegramMessage = httpsCallable(getFunctions(auth.app, 'europe-west1'), 'sendCustomTelegramMessage');
+          const result = await sendCustomTelegramMessage({ 
+              text: channelText,
+              buttonText: "📰 Leggi di più sull'App",
+              buttonUrl: "https://pcgl-volontari.web.app/" 
+          });
+          if (result.data.success) {
+              showToast("News condivisa su Telegram con successo!");
+          }
+      } catch (e) {
+          console.error(e);
+          showToast("Errore Telegram: " + e.message, "error");
+      }
+  };
+
   const addDocument = async () => {
     if (!newDocTitle) { showToast("Inserisci un titolo.", 'error'); return; }
     
+    const isStaff = ['admin', 'superadmin', 'coordinamento'].includes(userData.ruolo);
+    const sedeTarget = isStaff ? targetSedeDoc : userData.sede;
+
     let url = newDocUrl;
     let storagePath = null;
 
@@ -3831,7 +3995,7 @@ function AppContent() {
         if (!newDocFile) { showToast("Seleziona un file.", 'error'); return; }
         setUploading(true);
         try {
-            const path = `documenti_sede/${userData.sede}/${Date.now()}_${newDocFile.name}`;
+            const path = `documenti_sede/${sedeTarget}/${Date.now()}_${newDocFile.name}`;
             const storageRef = ref(storage, path);
             await uploadBytes(storageRef, newDocFile);
             url = await getDownloadURL(storageRef);
@@ -3848,9 +4012,6 @@ function AppContent() {
         if (!newDocUrl) { showToast("Inserisci un URL.", 'error'); return; }
     }
 
-    const isStaff = ['admin', 'superadmin', 'coordinamento'].includes(userData.ruolo);
-    const sedeTarget = isStaff ? targetSedeDoc : userData.sede;
-
     await addDoc(collection(db, 'documenti'), { titolo: newDocTitle, url: url, tipo: newDocType, data: new Date().toISOString(), autore: userData.nome + ' ' + userData.cognome, sede: sedeTarget, storagePath });
     await logAction("DOCUMENTO", `Nuovo documento (${newDocType}): ${newDocTitle} per ${sedeTarget}`);
     setNewDocTitle(''); setNewDocUrl(''); setNewDocFile(null); showToast("Documento aggiunto!");
@@ -3861,9 +4022,29 @@ function AppContent() {
     if (!newResourceName || !newResourceType) return;
     await addDoc(collection(db, 'risorse'), { nome: newResourceName, tipo: newResourceType, quantita: newResourceQuantity, sede: userData.sede, dataAggiunta: new Date().toISOString() });
     await logAction("RISORSA", `Aggiunta risorsa: ${newResourceName} a ${userData.sede}`);
+    
+    let targetSede = userData.sede;
+    if (userData.originalRuolo === 'superadmin' && userData.ruolo !== 'superadmin') {
+        targetSede = 'SEDE TEST FITTIZIA';
+    }
+
+    await addDoc(collection(db, 'risorse'), { nome: newResourceName, tipo: newResourceType, quantita: newResourceQuantity, sede: targetSede, dataAggiunta: new Date().toISOString() });
+    await logAction("RISORSA", `Aggiunta risorsa: ${newResourceName} a ${targetSede}`);
     setNewResourceName(''); setNewResourceType(''); setNewResourceQuantity(1); showToast("Risorsa aggiunta!");
   };
-  const deleteResource = async (id) => { if(!id) return; await deleteDoc(doc(db, 'risorse', id)); showToast("Risorsa eliminata!"); };
+  const deleteResource = async (id) => {
+      if(!id) return; 
+      
+      if (userData.originalRuolo === 'superadmin' && userData.ruolo !== 'superadmin') {
+          const ris = risorseSede.find(r => r.id === id);
+          if (ris && ris.sede !== 'SEDE TEST FITTIZIA') {
+              showToast("In simulazione puoi eliminare solo le risorse della SEDE TEST FITTIZIA.", "error");
+              return;
+          }
+      }
+
+      await deleteDoc(doc(db, 'risorse', id)); showToast("Risorsa eliminata!"); 
+  };
 
   const activateAlert = async () => {
     let zonesToAlert = selectedZones;
@@ -3934,10 +4115,28 @@ function AppContent() {
     } catch (e) { console.error(e); showToast("Errore invio.", 'error'); }
   };
 
+  // --- GENERATORE LINK CALENDARIO (GOOGLE) ---
+  const generateGoogleCalendarLink = (turno, slot) => {
+      const start = new Date(`${turno.data}T${slot.oraInizio}:00`).toISOString().replace(/-|:|\.\d\d\d/g, "");
+      const end = new Date(`${turno.data}T${slot.oraFine}:00`).toISOString().replace(/-|:|\.\d\d\d/g, "");
+      const title = encodeURIComponent(`Turno PCGL: ${turno.titolo} (${slot.nome})`);
+      const details = encodeURIComponent(`Sede operativa: ${turno.sede}`);
+      return `https://calendar.google.com/calendar/render?action=TEMPLATE&text=${title}&dates=${start}/${end}&details=${details}&location=${encodeURIComponent(turno.sede)}`;
+  };
+
   // --- GESTIONE MEZZI ---
   const handleVehicleSave = async () => {
     const isStaff = ['admin', 'superadmin', 'coordinamento'].includes(userData.ruolo);
-    const targetSede = isStaff ? vehicleForm.sede : userData.sede;
+    let targetSede = isStaff ? vehicleForm.sede : userData.sede;
+
+    // --- PROTEZIONE SIMULAZIONE ---
+    if (userData.originalRuolo === 'superadmin' && userData.ruolo !== 'superadmin') {
+        targetSede = 'SEDE TEST FITTIZIA';
+        if (vehicleForm.id && vehicleForm.sede !== 'SEDE TEST FITTIZIA') {
+            showToast("In simulazione puoi modificare solo i mezzi della SEDE TEST FITTIZIA.", "error");
+            return;
+        }
+    }
 
     if (!vehicleForm.tipo || !vehicleForm.tipologia || !vehicleForm.targa || !targetSede) { setError("Compila tutti i campi obbligatori."); return; }
     try {
@@ -3976,6 +4175,16 @@ function AppContent() {
   const deleteVehicle = async (id) => {
       if (!id) return;
       if (!window.confirm("Sei sicuro di voler eliminare questo mezzo?")) return;
+      
+      // --- PROTEZIONE SIMULAZIONE ---
+      if (userData.originalRuolo === 'superadmin' && userData.ruolo !== 'superadmin') {
+          const mezzo = mezzi.find(m => m.id === id);
+          if (mezzo && mezzo.sede !== 'SEDE TEST FITTIZIA') {
+              showToast("In simulazione puoi eliminare solo i mezzi della SEDE TEST FITTIZIA.", "error");
+              return;
+          }
+      }
+
       try {
           await deleteDoc(doc(db, 'mezzi', id));
           showToast("Mezzo eliminato!");
@@ -4001,9 +4210,23 @@ function AppContent() {
   const handleMovementSubmit = async () => {
     if (!selectedVehicle || !movementForm.km) { setError("Inserisci i Km."); return; }
     
+    // --- PROTEZIONE SIMULAZIONE ---
+    if (userData.originalRuolo === 'superadmin' && userData.ruolo !== 'superadmin') {
+        if (selectedVehicle.sede !== 'SEDE TEST FITTIZIA') {
+            setError("In simulazione puoi movimentare solo mezzi della SEDE TEST FITTIZIA.");
+            return;
+        }
+    }
+
     try {
         if (movementForm.mode === 'uscita') {
             // APERTURA FOGLIO DI MARCIA
+            const allChecked = Object.values(movementForm.checklist).every(v => v === true);
+            if (!allChecked) {
+                setError("Completa la Checklist Pre-Partenza obbligatoria.");
+                return;
+            }
+
             if (!movementForm.motivazione) { setError("Inserisci una motivazione."); return; }
             
             await addDoc(collection(db, 'movimenti_mezzi'), {
@@ -4017,7 +4240,8 @@ function AppContent() {
                 noteUscita: movementForm.note,
                 dataUscita: new Date().toISOString(),
                 stato: 'aperto',
-                spese: []
+                spese: [],
+                checklist: movementForm.checklist
             });
             showToast("Foglio di marcia aperto!");
         } else {
@@ -4055,7 +4279,7 @@ function AppContent() {
             showToast("Rientro registrato e Km aggiornati!");
         }
         setShowMovementModal(false);
-        setMovementForm({ mode: 'uscita', km: '', motivazione: '', note: '', spese: [], newSpesaTipo: 'carburante', newSpesaImporto: '' });
+        setMovementForm({ mode: 'uscita', km: '', motivazione: '', note: '', spese: [], newSpesaTipo: 'carburante', newSpesaImporto: '', checklist: { carrozzeria: false, pneumatici: false, attrezzatura_dpi: false, livelli_carburante: false } });
     } catch (e) { 
         console.error(e); 
         setError("Errore durante il salvataggio."); 
@@ -4065,6 +4289,12 @@ function AppContent() {
   const uploadVehicleDoc = async () => {
     if (!selectedVehicle || !vehicleDocFile) return;
     
+    // --- PROTEZIONE SIMULAZIONE ---
+    if (userData.originalRuolo === 'superadmin' && userData.ruolo !== 'superadmin' && selectedVehicle.sede !== 'SEDE TEST FITTIZIA') {
+        showToast("In simulazione puoi caricare documenti solo per i mezzi della SEDE TEST FITTIZIA.", "error");
+        return;
+    }
+
     if (vehicleDocFile.size > 10 * 1024 * 1024) {
         showToast("File troppo grande (Max 10MB).", 'error');
         return;
@@ -4102,6 +4332,13 @@ function AppContent() {
 
   const deleteVehicleDoc = async (docData) => {
     if (!selectedVehicle || !selectedVehicle.id) return;
+
+    // --- PROTEZIONE SIMULAZIONE ---
+    if (userData.originalRuolo === 'superadmin' && userData.ruolo !== 'superadmin' && selectedVehicle.sede !== 'SEDE TEST FITTIZIA') {
+        showToast("In simulazione non puoi eliminare documenti di mezzi reali.", "error");
+        return;
+    }
+
     try {
         await updateDoc(doc(db, 'mezzi', selectedVehicle.id), {
             documenti: arrayRemove(docData)
@@ -4227,6 +4464,29 @@ function AppContent() {
         await updateDoc(doc(db, 'users', user.uid), { fascicoloCorsi: arrayRemove(courseObj) });
         showToast("Attestato rimosso.");
     } catch (e) { console.error(e); showToast("Errore rimozione.", 'error'); }
+  };
+
+  const generateTelegramLink = async () => {
+    setIsTelegramLinking(true);
+    try {
+        const token = await auth.currentUser.getIdToken();
+        const response = await fetch('https://europe-west1-pcgl-volontari.cloudfunctions.net/generateTelegramLink', {
+            headers: { 'Authorization': `Bearer ${token}` }
+        });
+        if (response.ok) {
+            const data = await response.json();
+            const botUsername = "grulu_bot"; 
+            const tgLink = `https://t.me/${botUsername}?start=${data.linkToken}`;
+            window.location.href = tgLink; // Molto più reattivo su mobile
+        } else {
+            showToast("Errore durante la generazione del link.", "error");
+        }
+    } catch (e) {
+        console.error(e);
+        showToast("Errore di connessione al server.", "error");
+    } finally {
+        setIsTelegramLinking(false);
+    }
   };
 
   const deleteShift = async (id) => {
@@ -4364,11 +4624,29 @@ function AppContent() {
   // --- FUNZIONI GESTIONE MODULI DATI ---
   const handleSaveCustomForm = async () => {
       if (!formEditor.title) { showToast("Inserisci il titolo del modulo.", 'error'); return; }
-      
+
+      // Include la domanda in compilazione se l'utente non ha premuto "Aggiungi Domanda"
+      let questions = [...(formEditor.questions || [])];
+      if (newFormQuestion.text?.trim()) {
+          const pending = buildQuestionFromDraft();
+          if (editingQuestionIndex >= 0) questions[editingQuestionIndex] = pending;
+          else questions.push(pending);
+      }
+      // Firestore rifiuta i valori undefined
+      questions = questions.map(q => ({
+          id: q.id || Date.now().toString() + Math.random().toString(36).slice(2, 6),
+          text: q.text || '',
+          type: q.type || 'text',
+          options: Array.isArray(q.options) ? q.options : [],
+          minDate: q.minDate || null,
+          maxDate: q.maxDate || null,
+          required: !!q.required
+      }));
+
       const basePayload = {
           title: formEditor.title,
-          description: formEditor.description,
-          questions: formEditor.questions,
+          description: formEditor.description || '',
+          questions,
           expirationDate: formEditor.expirationDate || null,
           responsibleId: formEditor.responsibleId || null,
           responsibleName: formEditor.responsibleName || null,
@@ -4385,10 +4663,14 @@ function AppContent() {
               const docRef = await addDoc(collection(db, 'custom_forms'), createPayload);
               setCustomForms(prev => [...prev, { ...createPayload, id: docRef.id }]);
               showToast("Modulo creato!");
+              if (subPage === 'news_gest') {
+                  setNewsFormId(docRef.id);
+              }
           }
           setShowFormEditorModal(false);
           setFormEditor({ id: null, title: '', description: '', questions: [], expirationDate: '', responsibleId: null, responsibleName: '' });
-      } catch (e) { console.error(e); showToast("Errore salvataggio.", 'error'); }
+          cancelEditQuestion();
+      } catch (e) { console.error(e); showToast("Errore salvataggio: " + (e.code || e.message), 'error'); }
   };
 
   const deleteCustomForm = async (id) => {
@@ -4398,22 +4680,62 @@ function AppContent() {
       showToast("Modulo eliminato.");
   };
 
+  const buildQuestionFromDraft = () => ({
+      id: editingQuestionIndex >= 0 ? formEditor.questions[editingQuestionIndex].id : Date.now().toString(),
+      text: newFormQuestion.text.trim(),
+      type: newFormQuestion.type,
+      options: (newFormQuestion.type === 'choice' || newFormQuestion.type === 'checkbox') ? newFormQuestion.options : [],
+      minDate: newFormQuestion.type === 'date_range' ? (newFormQuestion.minDate || null) : null,
+      maxDate: newFormQuestion.type === 'date_range' ? (newFormQuestion.maxDate || null) : null,
+      required: newFormQuestion.required || false
+  });
+
   const addQuestionToEditor = () => {
-      if (!newFormQuestion.text) return;
-      const q = {
-          id: Date.now().toString(),
-          text: newFormQuestion.text,
-          type: newFormQuestion.type,
-          options: (newFormQuestion.type === 'choice' || newFormQuestion.type === 'checkbox') ? newFormQuestion.options : [],
-          minDate: newFormQuestion.type === 'date_range' ? newFormQuestion.minDate : null,
-          maxDate: newFormQuestion.type === 'date_range' ? newFormQuestion.maxDate : null
-      };
-      setFormEditor(prev => ({ ...prev, questions: [...prev.questions, q] }));
-      setNewFormQuestion({ text: '', type: 'text', options: [], minDate: '', maxDate: '' });
+      if (!newFormQuestion.text?.trim()) { showToast("Inserisci il testo della domanda.", 'error'); return; }
+      const q = buildQuestionFromDraft();
+
+      if (editingQuestionIndex >= 0) {
+          const updatedQuestions = [...formEditor.questions];
+          updatedQuestions[editingQuestionIndex] = q;
+          setFormEditor(prev => ({ ...prev, questions: updatedQuestions }));
+          setEditingQuestionIndex(-1);
+      } else {
+          setFormEditor(prev => ({ ...prev, questions: [...prev.questions, q] }));
+      }
+      setNewFormQuestion({ text: '', type: 'text', options: [], minDate: '', maxDate: '', required: false });
+  };
+
+  const startEditingQuestion = (index) => {
+      const q = formEditor.questions[index];
+      setNewFormQuestion({
+          text: q.text,
+          type: q.type,
+          options: q.options ? [...q.options] : [],
+          minDate: q.minDate || '',
+          maxDate: q.maxDate || '',
+          required: q.required || false
+      });
+      setEditingQuestionIndex(index);
+  };
+
+  const cancelEditQuestion = () => {
+      setEditingQuestionIndex(-1);
+      setNewFormQuestion({ text: '', type: 'text', options: [], minDate: '', maxDate: '', required: false });
   };
 
   const removeQuestionFromEditor = (idx) => {
+      if (editingQuestionIndex === idx) cancelEditQuestion();
       setFormEditor(prev => ({ ...prev, questions: prev.questions.filter((_, i) => i !== idx) }));
+  };
+
+  const handleSortQuestions = () => {
+      const _questions = [...formEditor.questions];
+      const draggedItemContent = _questions.splice(dragItem.current, 1)[0];
+      _questions.splice(dragOverItem.current, 0, draggedItemContent);
+      dragItem.current = null;
+      dragOverItem.current = null;
+      setFormEditor(prev => ({ ...prev, questions: _questions }));
+      if (editingQuestionIndex !== -1) cancelEditQuestion();
   };
 
   const openFormResponses = async (form) => {
@@ -4422,6 +4744,67 @@ function AppContent() {
       const snap = await getDocs(q);
       setResponsesList(snap.docs.map(d => d.data()));
       setSubPage('form_responses_view');
+  };
+
+  const executeFormCSVExport = () => {
+      if (!viewingResponses) return;
+
+      const headers = [];
+      if (formExportColumns.data) headers.push("Data");
+      if (formExportColumns.utente) headers.push("Utente");
+      if (formExportColumns.cf) headers.push("Codice Fiscale");
+      if (formExportColumns.sede) headers.push("Sede");
+      if (formExportColumns.telefono) headers.push("Telefono");
+
+      const activeQuestions = viewingResponses.questions.filter(q => formExportColumns[q.id]);
+      headers.push(...activeQuestions.map(q => q.text));
+
+      const rows = responsesList.map(r => {
+          const row = [];
+          if (formExportColumns.data) row.push(`"${new Date(r.submittedAt).toLocaleString()}"`);
+          if (formExportColumns.utente) row.push(`"${String(r.userName || '').replace(/"/g, '""')}"`);
+          if (formExportColumns.cf) {
+              let cf = r.userCf;
+              if (!cf && allUsers) {
+                  const u = allUsers.find(user => user.id === r.userId);
+                  if (u) cf = u.cf;
+              }
+              row.push(`"${String(cf || 'N/D').replace(/"/g, '""')}"`);
+          }
+          if (formExportColumns.sede) row.push(`"${String(r.userSede || '').replace(/"/g, '""')}"`);
+          if (formExportColumns.telefono) row.push(`"${String(r.userPhone || '').replace(/"/g, '""')}"`);
+
+          activeQuestions.forEach(q => {
+              const ans = r.answers[q.id];
+              let textVal = '';
+              if (typeof ans === 'object' && ans !== null && ans.start) {
+                  textVal = `${ans.start} -> ${ans.end}`;
+              } else if (typeof ans === 'object' && ans !== null && ans.url) {
+                  textVal = ans.url;
+              } else if (Array.isArray(ans)) {
+                  textVal = ans.join(', ');
+              } else if (ans === true) {
+                  textVal = 'SÌ';
+              } else if (ans === false) {
+                  textVal = 'NO';
+              } else {
+                  textVal = ans || '';
+              }
+              row.push(`"${String(textVal).replace(/"/g, '""')}"`);
+          });
+          return row;
+      });
+
+      const csvContent = "data:text/csv;charset=utf-8," + [headers.map(h => `"${h.replace(/"/g, '""')}"`).join(","), ...rows.map(e => e.join(","))].join("\n");
+      const encodedUri = encodeURI(csvContent);
+      const link = document.createElement("a");
+      link.setAttribute("href", encodedUri);
+      link.setAttribute("download", `risposte_${viewingResponses.title.replace(/[^a-z0-9]/gi, '_')}.csv`);
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      setShowFormExportModal(false);
+      showToast("Esportazione completata.");
   };
 
   const submitCustomForm = async () => {
@@ -4435,6 +4818,7 @@ function AppContent() {
               userName: `${userData.nome} ${userData.cognome}`,
               userSede: userData.sede,
               userPhone: userData.telefono || 'N/D',
+              userCf: userData.cf || 'N/D',
               answers: fillingAnswers,
               submittedAt: new Date().toISOString()
           });
@@ -4442,6 +4826,25 @@ function AppContent() {
           setFillingForm(null);
           setFillingAnswers({});
       } catch (e) { console.error(e); showToast("Errore invio.", 'error'); }
+  };
+
+  const handleFormFileUpload = async (e, qId) => {
+      const file = e.target.files[0];
+      if (!file) return;
+      if (file.size > 10 * 1024 * 1024) { showToast("File troppo grande (Max 10MB)", 'error'); return; }
+      
+      setUploading(true);
+      try {
+          const storageRef = ref(storage, `form_attachments/${fillingForm.id}/${user.uid}/${Date.now()}_${file.name}`);
+          await uploadBytes(storageRef, file);
+          const url = await getDownloadURL(storageRef);
+          
+          setFillingAnswers(prev => ({ ...prev, [qId]: { name: file.name, url: url, type: 'file' } }));
+          showToast("File caricato!");
+      } catch (err) {
+          console.error(err);
+          showToast("Errore caricamento file.", 'error');
+      } finally { setUploading(false); }
   };
 
   const handleFillForm = async (formId) => {
@@ -4457,8 +4860,34 @@ function AppContent() {
       }
       if (form) {
           if (form.expirationDate && new Date() > new Date(form.expirationDate)) {
-              showToast("Il modulo è scaduto e non può più essere compilato.", 'error');
-              return;
+              // PERMETTI ACCESSO AI GESTORI ANCHE SE SCADUTO
+              const isStaff = ['admin', 'superadmin', 'coordinamento'].includes(userData.ruolo);
+              const isResponsible = form.responsibleId === user.uid;
+
+              if (!isStaff && !isResponsible) {
+                  showToast("Il modulo è scaduto e non può più essere compilato.", 'error');
+                  return;
+              }
+              showToast("Modulo scaduto (Accesso Gestore)", 'info');
+          }
+
+          // CHECK SE L'UTENTE HA GIÀ RISPOSTO (Per abilitare la modifica)
+          try {
+            const qResp = query(collection(db, 'form_responses'), where('formId', '==', form.id), where('userId', '==', user.uid));
+            const snapResp = await getDocs(qResp);
+            if (!snapResp.empty) {
+                const existingDoc = snapResp.docs[0];
+                setFillingAnswers(existingDoc.data().answers || {});
+                setEditingResponseId(existingDoc.id);
+                showToast("Risposta precedente caricata. Puoi modificarla.", 'info');
+            } else {
+                setFillingAnswers({});
+                setEditingResponseId(null);
+            }
+          } catch (e) {
+            console.error("Error checking existing response", e);
+            setFillingAnswers({});
+            setEditingResponseId(null);
           }
 
           // CHECK DATE OCCUPATE (Per domande tipo date_range)
@@ -4484,9 +4913,69 @@ function AppContent() {
           } else { setOccupiedSlots([]); }
 
           setFillingForm(form);
-          setFillingAnswers({});
+          setSubPage('fill_form'); // Imposta la pagina dedicata invece del modale
       } else {
           showToast("Modulo non trovato.", 'error');
+      }
+  };
+
+  const handleSendCustomTelegram = async () => {
+      if (!customTelegramMessage.trim()) {
+          showToast("Inserisci un messaggio da inviare.", "error");
+          return;
+      }
+      
+      if (!window.confirm("Sei sicuro di voler inviare questo messaggio a tutto il canale Telegram?")) return;
+      
+      setSendingTelegram(true);
+      try {
+          const sendCustomTelegramMessage = httpsCallable(getFunctions(auth.app, 'europe-west1'), 'sendCustomTelegramMessage');
+          const result = await sendCustomTelegramMessage({ 
+              text: customTelegramMessage,
+              buttonText: tgButtonText,
+              buttonUrl: tgButtonUrl
+          });
+          if (result.data.success) {
+              showToast("Messaggio inviato al canale Telegram con successo!");
+              setCustomTelegramMessage('');
+              setTgButtonText(''); setTgButtonUrl('');
+          }
+      } catch (e) {
+          console.error(e);
+          showToast("Errore invio messaggio: " + e.message, "error");
+      } finally {
+          setSendingTelegram(false);
+      }
+  };
+
+  const shareMeteoToTelegram = async () => {
+      if (!window.confirm(`Vuoi inoltrare il bollettino meteo attuale sul canale Telegram?`)) return;
+      
+      let iconaOggi = '🟢';
+      if (meteoData.oggi === 'gialla') iconaOggi = '🟡';
+      if (meteoData.oggi === 'arancione') iconaOggi = '🟠';
+      if (meteoData.oggi === 'rossa') iconaOggi = '🔴';
+
+      let iconaDomani = '🟢';
+      if (meteoData.domani === 'gialla') iconaDomani = '🟡';
+      if (meteoData.domani === 'arancione') iconaDomani = '🟠';
+      if (meteoData.domani === 'rossa') iconaDomani = '🔴';
+
+      const text = `⛈ <b>BOLLETTINO METEO: ${meteoData.zona}</b> ⛈\n\nOggi: ${iconaOggi} <b>${meteoData.oggi.toUpperCase()}</b>\nDomani: ${iconaDomani} <b>${meteoData.domani.toUpperCase()}</b>`;
+      
+      try {
+          const sendCustomTelegramMessage = httpsCallable(getFunctions(auth.app, 'europe-west1'), 'sendCustomTelegramMessage');
+          const result = await sendCustomTelegramMessage({ 
+              text: text,
+              buttonText: "⛈ Apri l'App per i Dettagli",
+              buttonUrl: "https://pcgl-volontari.web.app/"
+          });
+          if (result.data.success) {
+              showToast("Bollettino condiviso su Telegram con successo!");
+          }
+      } catch (e) {
+          console.error(e);
+          showToast("Errore Telegram: " + e.message, "error");
       }
   };
 
@@ -4532,6 +5021,13 @@ function AppContent() {
       setFillingAnswers({ ...fillingAnswers, [qId]: newRange });
   };
 
+  const handlePreviewForm = () => {
+    setFillingForm({ ...formEditor });
+    setPreviewSource('editor');
+    setShowFormEditorModal(false);
+    setSubPage('fill_form');
+  };
+
   // --- TRACKING VISUALIZZAZIONE ALLERTA ---
   useEffect(() => {
       if (attivazioniAttive.length > 0 && user && userData) {
@@ -4551,6 +5047,19 @@ function AppContent() {
   // --- RENDER SOTTOPAGINE ---
   const renderSubPage = () => {
     switch(subPage) {
+      case 'sala_operativa': return <SalaOperativaManager currentUser={userData} onBack={() => setSubPage(previousPage || 'home')} onNavigate={setSubPage} />;
+
+      case 'live_diretta': return <LivePublisherSOGL currentUser={userData} onBack={() => setSubPage(null)} />;
+
+      case 'campagna_aib': return (
+        <div className="animate-in slide-in-from-right duration-500 w-full pb-40">
+           <HeaderSub title="Campagna AIB" onBack={() => setSubPage(null)} />
+           <div className="px-4 md:px-0">
+               <CampagnaAIBSOGL currentUser={userData} />
+           </div>
+        </div>
+      );
+
       case 'form_manager': return (
         <div className="animate-in slide-in-from-right duration-500 w-full pb-40">
             <HeaderSub title="Gestione Moduli Dati" onBack={() => setSubPage('settings_view')} />
@@ -4564,12 +5073,21 @@ function AppContent() {
                     <div key={form.id} className="bg-white p-6 rounded-2xl shadow-card border border-gray-100">
                         <div className="flex justify-between items-start mb-2">
                             <div>
-                                <h3 className="font-black text-lg text-pcgl-blue uppercase">{form.title}</h3>
+                                <div className="flex items-center gap-2">
+                                    <h3 className="font-black text-lg text-pcgl-blue uppercase">{form.title}</h3>
+                                    {form.expirationDate && new Date() > new Date(form.expirationDate) && (
+                                        <span className="bg-red-100 text-red-600 text-[9px] font-bold px-2 py-0.5 rounded uppercase">Scaduto</span>
+                                    )}
+                                </div>
                                 <p className="text-sm text-gray-500">{form.description}</p>
                                 <p className="text-xs text-gray-400 mt-1">{form.questions?.length || 0} Domande</p>
                             </div>
                             <div className="flex gap-1">
-                                <button onClick={() => { setFormEditor(form); setShowFormEditorModal(true); }} className="p-2 bg-blue-50 text-blue-600 rounded-lg hover:bg-blue-100"><Pencil size={18}/></button>
+                                <button onClick={() => {
+                                    setPreviewSource('manager_list');
+                                    handleFillForm(form.id);
+                                }} className="p-2 bg-purple-50 text-purple-600 rounded-lg hover:bg-purple-100"><Eye size={18}/></button>
+                                <button onClick={() => { cancelEditQuestion(); setFormEditor({ ...form, description: form.description || '', questions: form.questions || [], expirationDate: form.expirationDate || '', responsibleId: form.responsibleId || null, responsibleName: form.responsibleName || '' }); setShowFormEditorModal(true); }} className="p-2 bg-blue-50 text-blue-600 rounded-lg hover:bg-blue-100"><Pencil size={18}/></button>
                                 <button onClick={() => {
                                     const link = `${window.location.origin}?formId=${form.id}`;
                                     navigator.clipboard.writeText(link);
@@ -4619,20 +5137,20 @@ function AppContent() {
                             
                             <div className="border-t pt-4">
                                 <label className="text-xs font-bold uppercase text-gray-400 mb-2 block">Domande</label>
-                                <div className="bg-gray-50 p-4 rounded-xl border mb-4">
-                                    <input type="text" placeholder="Testo Domanda" className="w-full p-2 mb-2 bg-white rounded-lg border text-sm" value={newFormQuestion.text} onChange={e => setNewFormQuestion({...newFormQuestion, text: e.target.value})} />
-                                    <div className="flex gap-2 mb-2">
-                                        <select className="flex-1 p-2 bg-white rounded-lg text-sm border" value={newFormQuestion.type} onChange={e => setNewFormQuestion({...newFormQuestion, type: e.target.value})}>
-                                            <option value="text">Testo Libero</option>
-                                            <option value="boolean">Sì / No</option>
+                                <div className="bg-gray-50 p-4 rounded-xl border mb-4 space-y-3">
+                                    <input type="text" placeholder="Testo Domanda" className="w-full p-2 bg-white rounded-lg border text-sm" value={newFormQuestion.text} onChange={e => setNewFormQuestion({...newFormQuestion, text: e.target.value})} />
+                                    <select className="w-full p-2 bg-white rounded-lg text-sm border" value={newFormQuestion.type} onChange={e => setNewFormQuestion({...newFormQuestion, type: e.target.value})}>
+                                        <option value="text">Testo Libero</option>
+                                        <option value="boolean">Sì / No</option>
                                         <option value="choice">Scelta Singola (Menu)</option>
                                         <option value="checkbox">Scelta Multipla (Caselle)</option>
-                                            <option value="date_range">Prenotazione Date (Esclusiva)</option>
-                                        </select>
+                                        <option value="date_range">Prenotazione Date (Esclusiva)</option>
+                                        <option value="file">Caricamento Documento</option>
+                                    </select>
                                     {(newFormQuestion.type === 'choice' || newFormQuestion.type === 'checkbox') && (
-                                        <div className="flex flex-col gap-2 flex-[2]">
+                                        <div className="flex flex-col gap-2">
                                             <div className="flex gap-2">
-                                                <input type="text" placeholder="Nuova Opzione" className="flex-1 p-2 bg-white rounded-lg text-sm border" value={tempOption} onChange={e => setTempOption(e.target.value)} onKeyPress={e => { if(e.key === 'Enter'){ if(tempOption) { setNewFormQuestion(prev => ({...prev, options: [...prev.options, tempOption]})); setTempOption(''); } } }} />
+                                                <input type="text" placeholder="Nuova Opzione" className="flex-1 min-w-0 p-2 bg-white rounded-lg text-sm border" value={tempOption} onChange={e => setTempOption(e.target.value)} onKeyDown={e => { if(e.key === 'Enter'){ e.preventDefault(); if(tempOption) { setNewFormQuestion(prev => ({...prev, options: [...prev.options, tempOption]})); setTempOption(''); } } }} />
                                                 <button onClick={() => { if(tempOption) { setNewFormQuestion(prev => ({...prev, options: [...prev.options, tempOption]})); setTempOption(''); } }} className="p-2 bg-blue-100 text-blue-600 rounded-lg"><Plus size={16}/></button>
                                             </div>
                                             <div className="flex flex-wrap gap-1">
@@ -4644,23 +5162,56 @@ function AppContent() {
                                             </div>
                                         </div>
                                         )}
-                                        {newFormQuestion.type === 'date_range' && (
-                                            <div className="flex gap-2 flex-[2]">
-                                                <input type="date" className="w-full p-2 bg-white rounded-lg text-sm border" placeholder="Min" value={newFormQuestion.minDate} onChange={e => setNewFormQuestion({...newFormQuestion, minDate: e.target.value})} title="Data Minima" />
-                                                <input type="date" className="w-full p-2 bg-white rounded-lg text-sm border" placeholder="Max" value={newFormQuestion.maxDate} onChange={e => setNewFormQuestion({...newFormQuestion, maxDate: e.target.value})} title="Data Massima" />
+                                    {newFormQuestion.type === 'date_range' && (
+                                        <div className="grid grid-cols-2 gap-2">
+                                            <div>
+                                                <label className="text-[10px] font-bold uppercase text-gray-400 ml-1">Data Minima</label>
+                                                <input type="date" className="w-full p-2 bg-white rounded-lg text-sm border" value={newFormQuestion.minDate} onChange={e => setNewFormQuestion({...newFormQuestion, minDate: e.target.value})} />
                                             </div>
-                                        )}
-                                        <button onClick={addQuestionToEditor} className="p-2 bg-blue-500 text-white rounded-lg"><Plus size={16}/></button>
-                                    </div>
+                                            <div>
+                                                <label className="text-[10px] font-bold uppercase text-gray-400 ml-1">Data Massima</label>
+                                                <input type="date" className="w-full p-2 bg-white rounded-lg text-sm border" value={newFormQuestion.maxDate} onChange={e => setNewFormQuestion({...newFormQuestion, maxDate: e.target.value})} />
+                                            </div>
+                                        </div>
+                                    )}
+                                <div className="flex items-center gap-2">
+                                    <input type="checkbox" id="req-check" className="w-4 h-4 rounded text-pcgl-blue focus:ring-pcgl-blue" checked={newFormQuestion.required} onChange={e => setNewFormQuestion({...newFormQuestion, required: e.target.checked})} />
+                                    <label htmlFor="req-check" className="text-xs font-bold uppercase text-gray-500 cursor-pointer">Campo Obbligatorio</label>
+                                </div>
+                                <div className="flex gap-2">
+                                    {editingQuestionIndex >= 0 && (
+                                        <button onClick={cancelEditQuestion} className="flex-1 py-2 bg-gray-200 text-gray-600 rounded-lg font-bold text-xs uppercase">Annulla</button>
+                                    )}
+                                    <button onClick={addQuestionToEditor} className={`flex-1 py-2 rounded-lg font-bold text-xs uppercase text-white ${editingQuestionIndex >= 0 ? 'bg-orange-500' : 'bg-green-600'}`}>
+                                        {editingQuestionIndex >= 0 ? "Aggiorna Domanda" : "Aggiungi Domanda"}
+                                    </button>
+                                </div>
                                 </div>
                                 <div className="space-y-2">
                                     {formEditor.questions.map((q, i) => (
-                                        <div key={i} className="flex justify-between items-center bg-white p-3 rounded-lg border shadow-sm">
-                                            <div>
-                                                <p className="font-bold text-sm">{q.text}</p>
-                                                <p className="text-xs text-gray-500 uppercase">{q.type} {(q.type === 'choice' || q.type === 'checkbox') && `[${q.options.join(', ')}]`} {q.type === 'date_range' && `[${q.minDate || '*'} - ${q.maxDate || '*'}]`}</p>
+                                <div 
+                                    key={q.id} 
+                                    draggable
+                                    onDragStart={(e) => { dragItem.current = i; }}
+                                    onDragEnter={(e) => { dragOverItem.current = i; }}
+                                    onDragEnd={handleSortQuestions}
+                                    onDragOver={(e) => e.preventDefault()}
+                                    className="flex justify-between items-center bg-white p-3 rounded-lg border shadow-sm cursor-move active:bg-blue-50 transition-colors"
+                                >
+                                    <div className="flex items-center gap-3">
+                                        <GripVertical size={16} className="text-gray-300" />
+                                        <div>
+                                            <p className="font-bold text-sm flex items-center">
+                                                {q.text} 
+                                                {q.required && <span className="text-red-500 ml-1">*</span>}
+                                            </p>
+                                            <p className="text-xs text-gray-500 uppercase">{q.type} {(q.type === 'choice' || q.type === 'checkbox') && `[${q.options.join(', ')}]`} {q.type === 'date_range' && `[${q.minDate || '*'} - ${q.maxDate || '*'}]`}</p>
+                                        </div>
                                             </div>
-                                            <button onClick={() => removeQuestionFromEditor(i)} className="text-red-500 hover:bg-red-50 p-2 rounded-lg"><Trash2 size={16}/></button>
+                                    <div className="flex gap-1">
+                                        <button onClick={() => startEditingQuestion(i)} className="text-blue-500 hover:bg-blue-50 p-2 rounded-lg"><Pencil size={16}/></button>
+                                        <button onClick={() => removeQuestionFromEditor(i)} className="text-red-500 hover:bg-red-50 p-2 rounded-lg"><Trash2 size={16}/></button>
+                                    </div>
                                         </div>
                                     ))}
                                 </div>
@@ -4674,35 +5225,14 @@ function AppContent() {
       );
 
       case 'form_responses_view': return (
-          <div className="animate-in slide-in-from-right duration-500 w-full pb-40">
+          <div className="animate-in slide-in-from-right duration-500 w-full pb-40 print:pb-0">
+            <div className="print:hidden">
               <HeaderSub title="Risposte Modulo" onBack={() => setSubPage('form_manager')} />
               <div className="bg-white p-6 rounded-3xl shadow-card border border-gray-100 mb-6">
                   <h3 className="font-black text-xl text-pcgl-blue uppercase">{viewingResponses?.title}</h3>
                   <p className="text-sm text-gray-500 mb-4">{viewingResponses?.description}</p>
                   <div className="flex gap-2">
-                      <button onClick={() => {
-                          const headers = ["Data", "Utente", "Sede", "Telefono", ...viewingResponses.questions.map(q => q.text)];
-                          const rows = responsesList.map(r => [
-                              new Date(r.submittedAt).toLocaleString(),
-                              r.userName,
-                              r.userSede,
-                              r.userPhone,
-                              ...viewingResponses.questions.map(q => {
-                                  const ans = r.answers[q.id];
-                                  if (typeof ans === 'object' && ans !== null && ans.start) {
-                                      return `${ans.start} -> ${ans.end}`;
-                                  }
-                                  if (Array.isArray(ans)) return ans.join(', ');
-                                  return ans === true ? 'SÌ' : ans === false ? 'NO' : (ans || '');
-                              })
-                          ]);
-                          const csvContent = "data:text/csv;charset=utf-8," + [headers.join(","), ...rows.map(e => e.join(","))].join("\n");
-                          const link = document.createElement("a");
-                          link.setAttribute("href", encodeURI(csvContent));
-                          link.setAttribute("download", `risposte_${viewingResponses.title}.csv`);
-                          document.body.appendChild(link);
-                          link.click();
-                      }} className="flex-1 py-3 bg-green-600 text-white rounded-xl font-bold uppercase shadow-md flex items-center justify-center"><FileSpreadsheet className="mr-2"/> Esporta CSV</button>
+                      <button onClick={() => setShowFormExportModal(true)} className="flex-1 py-3 bg-green-600 text-white rounded-xl font-bold uppercase shadow-md flex items-center justify-center"><FileSpreadsheet className="mr-2"/> Esporta CSV</button>
                       <button onClick={() => window.print()} className="flex-1 py-3 bg-pcgl-blue text-white rounded-xl font-bold uppercase shadow-md flex items-center justify-center"><Printer className="mr-2"/> Stampa Report</button>
                   </div>
               </div>
@@ -4710,7 +5240,10 @@ function AppContent() {
                   {responsesList.map((res, i) => (
                       <div key={i} className="bg-white p-4 rounded-xl shadow-sm border border-gray-100">
                           <div className="flex justify-between items-start mb-2 border-b border-gray-100 pb-2">
-                              <div><p className="font-bold text-pcgl-blue uppercase">{res.userName}</p><p className="text-xs text-gray-500">{res.userSede} • {res.userPhone}</p></div>
+                              <div>
+                                <p className="font-bold text-pcgl-blue uppercase">{res.userName}</p>
+                                <p className="text-xs text-gray-500">{res.userCf || allUsers.find(u => u.id === res.userId)?.cf || 'CF N/D'} • {res.userSede} • {res.userPhone}</p>
+                              </div>
                               <span className="text-[10px] text-gray-400">{new Date(res.submittedAt).toLocaleDateString()}</span>
                           </div>
                           <div className="space-y-2">
@@ -4723,6 +5256,8 @@ function AppContent() {
                                            Array.isArray(res.answers[q.id]) ? res.answers[q.id].join(', ') :
                                            (typeof res.answers[q.id] === 'object' && res.answers[q.id]?.start) ? 
                                            `${new Date(res.answers[q.id].start).toLocaleDateString()} - ${new Date(res.answers[q.id].end).toLocaleDateString()}` : 
+                                           (typeof res.answers[q.id] === 'object' && res.answers[q.id]?.url) ?
+                                           <a href={res.answers[q.id].url} target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline flex items-center"><Paperclip size={14} className="mr-1"/> {res.answers[q.id].name}</a> :
                                            (res.answers[q.id] || '-')}
                                       </p>
                                   </div>
@@ -4732,9 +5267,10 @@ function AppContent() {
                   ))}
                   {responsesList.length === 0 && <p className="text-center text-gray-500 font-medium py-8">Nessuna risposta ricevuta.</p>}
               </div>
+            </div>
 
               {/* PRINT LAYOUT */}
-              <div className="hidden print:block fixed inset-0 bg-white z-[3000] p-12 text-black font-sans h-screen overflow-auto">
+              <div className="hidden print:block w-full bg-white p-8 text-black font-sans">
                   <h1 className="text-3xl font-black uppercase mb-2">Report: {viewingResponses?.title}</h1>
                   <p className="text-sm text-gray-500 mb-8">Generato il {new Date().toLocaleDateString()}</p>
                   <table className="w-full text-left text-sm border-collapse">
@@ -4747,7 +5283,11 @@ function AppContent() {
                           {responsesList.map((r, i) => (
                               <tr key={i} className="border-b border-gray-200">
                                   <td className="py-2 text-xs">{new Date(r.submittedAt).toLocaleDateString()}</td>
-                                  <td className="py-2 font-bold uppercase">{r.userName}<br/><span className="text-xs font-normal">{r.userPhone}</span></td>
+                                  <td className="py-2 font-bold uppercase">
+                                      {r.userName}<br/>
+                                      <span className="text-xs font-normal text-gray-500">{r.userCf || allUsers.find(u => u.id === r.userId)?.cf || 'CF N/D'}</span><br/>
+                                      <span className="text-xs font-normal">{r.userPhone}</span>
+                                  </td>
                                   <td className="py-2">{r.userSede}</td>
                                   <td className="py-2 text-xs">{viewingResponses.questions.map(q => <div key={q.id}><b>{q.text}:</b> {
                                       r.answers[q.id] === true ? 'SÌ' : 
@@ -4755,6 +5295,7 @@ function AppContent() {
                                       Array.isArray(r.answers[q.id]) ? r.answers[q.id].join(', ') :
                                       (typeof r.answers[q.id] === 'object' && r.answers[q.id]?.start) ? 
                                       `${r.answers[q.id].start} / ${r.answers[q.id].end}` : 
+                                      (typeof r.answers[q.id] === 'object' && r.answers[q.id]?.url) ? r.answers[q.id].name :
                                       r.answers[q.id]
                                   }</div>)}</td>
                               </tr>
@@ -4762,6 +5303,71 @@ function AppContent() {
                       </tbody>
                   </table>
               </div>
+
+              {showFormExportModal && (
+                  <div className="fixed inset-0 bg-black/50 z-[200] flex items-center justify-center p-4 animate-in fade-in print:hidden">
+                    <div className="bg-white p-6 rounded-3xl w-full max-w-xl shadow-2xl relative max-h-[90vh] flex flex-col">
+                      <button onClick={() => setShowFormExportModal(false)} className="absolute top-4 right-4 text-gray-400 hover:text-gray-600"><X size={24}/></button>
+                      <h3 className="font-black text-xl mb-4 text-pcgl-blue uppercase">Esporta Risposte Modulo</h3>
+                      
+                      <div className="flex-1 overflow-y-auto pr-2 space-y-6">
+                          <div>
+                              <h4 className="font-bold text-sm text-gray-600 uppercase mb-3 border-b pb-1">Dati Utente</h4>
+                              <div className="grid grid-cols-2 gap-3">
+                                  <label className="flex items-center space-x-2 cursor-pointer bg-gray-50 p-2 rounded-lg border border-gray-100 hover:bg-gray-100 transition-colors">
+                                      <input type="checkbox" checked={formExportColumns.data} onChange={e => setFormExportColumns({...formExportColumns, data: e.target.checked})} className="rounded text-pcgl-blue focus:ring-pcgl-blue" />
+                                      <span className="text-xs font-medium text-gray-700 uppercase">Data Compilazione</span>
+                                  </label>
+                                  <label className="flex items-center space-x-2 cursor-pointer bg-gray-50 p-2 rounded-lg border border-gray-100 hover:bg-gray-100 transition-colors">
+                                      <input type="checkbox" checked={formExportColumns.utente} onChange={e => setFormExportColumns({...formExportColumns, utente: e.target.checked})} className="rounded text-pcgl-blue focus:ring-pcgl-blue" />
+                                      <span className="text-xs font-medium text-gray-700 uppercase">Nome Utente</span>
+                                  </label>
+                                  <label className="flex items-center space-x-2 cursor-pointer bg-gray-50 p-2 rounded-lg border border-gray-100 hover:bg-gray-100 transition-colors">
+                                      <input type="checkbox" checked={formExportColumns.cf || false} onChange={e => setFormExportColumns({...formExportColumns, cf: e.target.checked})} className="rounded text-pcgl-blue focus:ring-pcgl-blue" />
+                                      <span className="text-xs font-medium text-gray-700 uppercase">Codice Fiscale</span>
+                                  </label>
+                                  <label className="flex items-center space-x-2 cursor-pointer bg-gray-50 p-2 rounded-lg border border-gray-100 hover:bg-gray-100 transition-colors">
+                                      <input type="checkbox" checked={formExportColumns.sede} onChange={e => setFormExportColumns({...formExportColumns, sede: e.target.checked})} className="rounded text-pcgl-blue focus:ring-pcgl-blue" />
+                                      <span className="text-xs font-medium text-gray-700 uppercase">Sede</span>
+                                  </label>
+                                  <label className="flex items-center space-x-2 cursor-pointer bg-gray-50 p-2 rounded-lg border border-gray-100 hover:bg-gray-100 transition-colors">
+                                      <input type="checkbox" checked={formExportColumns.telefono} onChange={e => setFormExportColumns({...formExportColumns, telefono: e.target.checked})} className="rounded text-pcgl-blue focus:ring-pcgl-blue" />
+                                      <span className="text-xs font-medium text-gray-700 uppercase">Telefono</span>
+                                  </label>
+                                  <label className="flex items-center space-x-2 cursor-pointer bg-gray-50 p-2 rounded-lg border border-gray-100 hover:bg-gray-100 transition-colors">
+                                      <input type="checkbox" checked={exportColumns.ultimoAccesso || false} onChange={e => setExportColumns({...exportColumns, ultimoAccesso: e.target.checked})} className="rounded text-pcgl-blue focus:ring-pcgl-blue" />
+                                      <span className="text-xs font-medium text-gray-700 uppercase">Ultimo Accesso App</span>
+                                  </label>
+                              </div>
+                          </div>
+
+                          <div>
+                              <h4 className="font-bold text-sm text-gray-600 uppercase mb-3 border-b pb-1">Domande del Modulo</h4>
+                              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                                  {viewingResponses?.questions.map(q => (
+                                      <label key={q.id} className="flex items-center space-x-2 cursor-pointer bg-gray-50 p-2 rounded-lg border border-gray-100 hover:bg-gray-100 transition-colors">
+                                          <input 
+                                              type="checkbox" 
+                                              checked={formExportColumns[q.id] || false} 
+                                              onChange={e => setFormExportColumns({...formExportColumns, [q.id]: e.target.checked})} 
+                                              className="rounded text-pcgl-blue focus:ring-pcgl-blue" 
+                                          />
+                                          <span className="text-xs font-medium text-gray-700 uppercase line-clamp-2">{q.text}</span>
+                                      </label>
+                                  ))}
+                              </div>
+                          </div>
+                      </div>
+
+                      <div className="flex gap-2 mt-6 pt-4 border-t border-gray-100">
+                        <button onClick={() => setShowFormExportModal(false)} className="flex-1 py-3 bg-gray-200 text-gray-600 rounded-xl font-bold uppercase hover:bg-gray-300 transition-colors">Annulla</button>
+                        <button onClick={() => executeFormCSVExport()} className="flex-[2] py-3 bg-pcgl-blue text-pcgl-yellow rounded-xl font-bold uppercase shadow-md flex items-center justify-center hover:bg-pcgl-yellow hover:text-pcgl-blue transition-all">
+                            <Download className="mr-2" size={20}/> Scarica CSV
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+              )}
           </div>
       );
 
@@ -4780,6 +5386,40 @@ function AppContent() {
                <h3 className="text-3xl font-black text-pcgl-blue uppercase">{userData.nome} {userData.cognome}</h3>
                <p className="text-gray-500 font-bold uppercase tracking-widest mt-2">{userData.ruolo} • {userData.sede}</p>
                <p className="text-xs text-gray-400 mt-1">CF: {userData.cf}</p>
+            </div>
+
+            {/* Collegamento Telegram */}
+            <div className="bg-white p-6 rounded-3xl shadow-card border border-gray-100 flex flex-col items-center text-center">
+               <h4 className="font-bold text-lg text-blue-500 uppercase mb-2 flex items-center">
+                 <svg className="w-6 h-6 mr-2 fill-current" viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm4.64 6.8c-.15 1.58-.8 5.42-1.13 7.19-.14.75-.42 1-.68 1.03-.58.05-1.02-.38-1.58-.75-.88-.58-1.38-.94-2.23-1.5-.99-.65-.35-1.01.22-1.59.15-.15 2.71-2.48 2.76-2.69a.2.2 0 00-.05-.18c-.06-.05-.14-.03-.21-.02-.09.02-1.49.95-4.22 2.79-.4.27-.76.41-1.08.4-.36-.01-1.04-.2-1.55-.37-.63-.21-1.12-.33-1.08-.7.02-.19.27-.39.75-.59 2.95-1.28 4.91-2.13 5.89-2.53 2.8-1.14 3.38-1.34 3.75-1.35.08 0 .27.02.39.12.1.08.13.19.14.27-.01.06.01.24 0 .24z"/></svg>
+                 Notifiche Telegram
+               </h4>
+               <p className="text-sm text-gray-500 mb-4">Collega il tuo account al bot per ricevere allerte e avvisi operativi istantanei in chat privata.</p>
+               {userData.telegramChatId ? (
+                  <div className="w-full space-y-3">
+                      <div className="bg-green-100 text-green-700 px-4 py-3 rounded-xl text-sm font-bold uppercase flex items-center justify-center">
+                         <Verified size={18} className="mr-2"/> Account Collegato
+                      </div>
+                      <button onClick={async () => {
+                          if (window.confirm("Vuoi scollegare il tuo account Telegram? Potrai ricollegarlo generando un nuovo link.")) {
+                              try {
+                                  await updateDoc(doc(db, 'users', user.uid), { telegramChatId: null });
+                                  setUserData(prev => ({...prev, telegramChatId: null}));
+                                  showToast("Account scollegato.");
+                              } catch (e) {
+                                  console.error(e);
+                                  showToast("Errore durante lo scollegamento.", 'error');
+                              }
+                          }
+                      }} className="w-full py-2 bg-gray-100 text-gray-600 rounded-xl text-xs font-bold uppercase hover:bg-gray-200 transition-colors">
+                          Scollega o Ripristina Bot
+                      </button>
+                  </div>
+               ) : (
+                  <button onClick={generateTelegramLink} disabled={isTelegramLinking} className="w-full py-3 bg-blue-500 text-white rounded-xl font-bold uppercase shadow-md active:scale-95 transition-all hover:bg-blue-600 disabled:opacity-50">
+                     {isTelegramLinking ? 'Collegamento...' : 'Collega Account'}
+                  </button>
+               )}
             </div>
 
             {/* QR Code nel Fascicolo */}
@@ -4884,14 +5524,46 @@ function AppContent() {
                </div>
                <div className="space-y-3">
                   {userData.fascicoloCorsi?.length > 0 ? userData.fascicoloCorsi.map((c, i) => (
-                    <div key={i} className={`p-4 rounded-xl border flex justify-between items-center shadow-sm ${c.certificato ? 'bg-green-50 border-green-100' : 'bg-gray-50 border-gray-200'}`}>
+                    <div key={i} className={`p-4 rounded-xl border flex justify-between items-center shadow-sm ${c.tipo === 'moodle' ? 'bg-blue-50 border-blue-100' : (c.certificato ? 'bg-green-50 border-green-100' : 'bg-gray-50 border-gray-200')}`}>
                        <div>
-                         <p className={`font-bold uppercase text-sm ${c.certificato ? 'text-pcgl-blue' : 'text-gray-600'}`}>{c.titolo}</p>
-                         <p className="text-xs text-gray-400">{new Date(c.data).toLocaleDateString()} • {c.certificato ? 'Certificato PCGL' : 'Autodichiarato'}</p>
+                         <p className={`font-bold uppercase text-sm ${c.tipo === 'moodle' ? 'text-blue-700' : (c.certificato ? 'text-pcgl-blue' : 'text-gray-600')}`}>{c.titolo}</p>
+                         <p className="text-xs text-gray-400">{new Date(c.data).toLocaleDateString()} • {c.tipo === 'moodle' ? 'Badge E-Learning' : (c.certificato ? 'Certificato PCGL' : 'Autodichiarato')}</p>
                        </div>
-                       {c.certificato ? <Verified className="text-green-600" size={20}/> : <button onClick={() => removeCourse(c)} className="text-red-400 hover:text-red-600 p-1"><Trash2 size={18}/></button>}
+                       {c.tipo === 'moodle' ? <Award className="text-blue-600" size={24} /> : 
+                        (c.certificato ? <Verified className="text-green-600" size={20}/> : <button onClick={() => removeCourse(c)} className="text-red-400 hover:text-red-600 p-1"><Trash2 size={18}/></button>)}
+                       {c.tipo === 'moodle' ? (
+                           <button onClick={() => window.open(`https://formazione.pcgl.it/course/view.php?id=${c.moodleId}`, '_blank')} className="p-2 bg-blue-100 text-blue-700 rounded-lg hover:bg-blue-200 transition-colors shadow-sm" title="Scarica/Apri Attestato Moodle">
+                               <Award size={20} />
+                           </button>
+                       ) : (
+                           c.certificato ? <Verified className="text-green-600" size={20}/> : <button onClick={() => removeCourse(c)} className="text-red-400 hover:text-red-600 p-1"><Trash2 size={18}/></button>
+                       )}
                     </div>
                   )) : <p className="text-center text-gray-400 text-sm py-4">Nessun corso presente nel fascicolo.</p>}
+               </div>
+            </div>
+
+            {/* CREDENZIALI MOODLE */}
+            <div className="bg-white p-8 rounded-3xl shadow-card border border-gray-100 space-y-6">
+               <h4 className="font-bold text-xl text-pcgl-blue uppercase flex items-center"><BookOpen className="mr-3 text-pcgl-yellow"/> Accesso E-Learning</h4>
+               <div className="bg-blue-50 p-6 rounded-2xl border border-blue-100">
+                 <p className="text-sm text-blue-800 mb-4">Usa queste credenziali per accedere ai corsi online sulla piattaforma Moodle.</p>
+                 <div className="space-y-3 bg-white p-4 rounded-xl border border-blue-50">
+                     <div>
+                         <p className="text-[10px] font-bold text-gray-400 uppercase">Username (Email)</p>
+                         <p className="font-mono font-bold text-pcgl-blue text-sm break-all">{user.email}</p>
+                     </div>
+                     <div>
+                         <p className="text-[10px] font-bold text-gray-400 uppercase">Password predefinita</p>
+                         <div className="flex justify-between items-center">
+                             <p className="font-mono font-bold text-pcgl-blue text-sm">{`Pcgl_${userData.cf}!`}</p>
+                             <button onClick={() => { navigator.clipboard.writeText(`Pcgl_${userData.cf}!`); showToast("Password copiata!"); }} className="p-2 bg-gray-100 text-gray-600 rounded-lg hover:bg-pcgl-yellow hover:text-pcgl-blue transition-colors">
+                                 <ClipboardList size={16} />
+                             </button>
+                         </div>
+                     </div>
+                 </div>
+                 <button onClick={() => window.open('https://formazione.pcgl.it', '_blank')} className="w-full mt-4 py-3 bg-pcgl-blue text-white rounded-xl font-bold uppercase shadow-md active:scale-95 transition-all hover:bg-pcgl-yellow hover:text-pcgl-blue">Apri Portale Formazione</button>
                </div>
             </div>
 
@@ -4917,9 +5589,19 @@ function AppContent() {
         </div>
       );
 
-      case 'gestione_corsi_admin': return (
+      case 'gestione_corsi_admin': {
+        const allCompletedCourses = [...new Set(allUsers.flatMap(u => (u.fascicoloCorsi || []).filter(c => c.certificato).map(c => c.titolo)))].sort();
+        
+        return (
         <div className="animate-in slide-in-from-right duration-500 w-full pb-40">
-          <HeaderSub title="Validazione Corsi" onBack={() => setSubPage(null)} />
+          <HeaderSub title="Conferma Presenze e Attestati" onBack={() => setSubPage(null)} />
+          
+          <div className="mb-8">
+              <button onClick={() => setSubPage('gestione_presenze')} className="w-full py-4 bg-pcgl-blue text-white rounded-2xl font-black uppercase shadow-lg hover:bg-blue-800 transition-all flex items-center justify-center">
+                  <QrCode className="mr-3" size={24}/> Gestione Presenze Live (QR)
+              </button>
+          </div>
+
           <div className="space-y-6 font-sans text-pcgl-text-dark">
             {corsiFormazione.map(c => (
               <div key={c.id} className="bg-white p-8 rounded-2xl shadow-card border border-gray-100">
@@ -4936,11 +5618,281 @@ function AppContent() {
               </div>
             ))}
           </div>
+
+          {/* NUOVA SEZIONE ALBO ATTESTATI */}
+          {['admin', 'superadmin', 'coordinamento'].includes(userData.ruolo) && (
+              <div className="bg-white p-8 rounded-2xl shadow-card border border-gray-100 mt-8">
+                  <div className="flex justify-between items-center mb-6 border-b pb-3">
+                      <h3 className="font-bold text-xl uppercase text-pcgl-blue">Albo Attestati Rilasciati</h3>
+                      {selectedCourseReport && (
+                          <button onClick={() => {
+                              const usersWithCourse = allUsers.filter(u => u.fascicoloCorsi?.some(c => c.certificato && c.titolo === selectedCourseReport));
+                              const headers = ["Cognome Nome", "CF", "Sede", "Data Conseguimento"];
+                              const rows = usersWithCourse.map(u => {
+                                  const courseData = u.fascicoloCorsi.find(c => c.certificato && c.titolo === selectedCourseReport);
+                                  return [`${u.cognome} ${u.nome}`, u.cf, u.sede, new Date(courseData.data).toLocaleDateString()];
+                              });
+                              const csvContent = "data:text/csv;charset=utf-8," + [headers.join(","), ...rows.map(e => `"${e.join('","')}"`)].join("\n");
+                              const link = document.createElement("a");
+                              link.setAttribute("href", encodeURI(csvContent));
+                              link.setAttribute("download", `attestati_${selectedCourseReport.replace(/[^a-z0-9]/gi, '_')}.csv`);
+                              document.body.appendChild(link);
+                              link.click();
+                              link.remove();
+                          }} className="text-xs font-bold text-green-600 uppercase bg-green-50 px-3 py-2 rounded-lg hover:bg-green-100 flex items-center transition-colors">
+                              <Download size={16} className="mr-1"/> Esporta CSV
+                          </button>
+                      )}
+                  </div>
+                  <p className="text-sm text-gray-500 mb-4">Seleziona un corso per visualizzare l'elenco completo dei volontari che hanno conseguito l'attestato (inclusi badge Moodle).</p>
+                  <select className="w-full p-4 bg-gray-50 rounded-xl border border-gray-200 font-bold text-sm uppercase mb-6 outline-none focus:border-pcgl-yellow transition-all" value={selectedCourseReport} onChange={e => setSelectedCourseReport(e.target.value)}>
+                      <option value="">-- Seleziona un Corso --</option>
+                      {allCompletedCourses.map(c => <option key={c} value={c}>{c}</option>)}
+                  </select>
+
+                  {selectedCourseReport && (
+                      <div className="space-y-3 max-h-96 overflow-y-auto pr-2">
+                          {allUsers.filter(u => u.fascicoloCorsi?.some(c => c.certificato && c.titolo === selectedCourseReport)).map(u => {
+                              const courseData = u.fascicoloCorsi.find(c => c.certificato && c.titolo === selectedCourseReport);
+                              return (
+                                  <div key={u.id} className="flex justify-between items-center bg-gray-50 p-4 rounded-xl border border-gray-100 hover:bg-gray-100 transition-colors">
+                                      <div className="flex items-center gap-3">
+                                          <div className="p-2 bg-blue-100 text-blue-600 rounded-lg">
+                                              {courseData.tipo === 'moodle' ? <Award size={20}/> : <Verified size={20}/>}
+                                          </div>
+                                          <div>
+                                              <p className="font-bold text-sm uppercase text-pcgl-blue">{u.cognome} {u.nome}</p>
+                                              <p className="text-xs text-gray-500">{u.sede} • CF: {u.cf}</p>
+                                          </div>
+                                      </div>
+                                      <div className="text-right">
+                                          <span className="text-[10px] font-bold text-gray-400 uppercase block mb-1">Conseguito il</span>
+                                          <span className="text-xs font-mono font-bold text-green-600 bg-green-50 px-2 py-1 rounded border border-green-100">{new Date(courseData.data).toLocaleDateString()}</span>
+                                      </div>
+                                  </div>
+                              );
+                          })}
+                          {allUsers.filter(u => u.fascicoloCorsi?.some(c => c.certificato && c.titolo === selectedCourseReport)).length === 0 && (
+                              <p className="text-center text-gray-500 italic py-4">Nessun volontario trovato per questo corso.</p>
+                          )}
+                      </div>
+                  )}
+              </div>
+          )}
+
         </div>
       );
+      }
+
+      case 'gestione_presenze': {
+        const activeSessionData = selectedSession ? (attendanceSessions.find(s => s.id === selectedSession.id) || selectedSession) : null;
+        return (
+        <div className="animate-in slide-in-from-right duration-500 w-full pb-40">
+            <HeaderSub title="Presenze Live" onBack={() => { if(selectedSession) setSelectedSession(null); else setSubPage('gestione_corsi_admin'); }} />
+            
+            {activeSessionData ? (
+                <div className="space-y-6 font-sans text-pcgl-text-dark animate-in zoom-in duration-300">
+                    {/* MODALITA' PROIEZIONE QR CODE */}
+                    <div className="bg-white p-8 rounded-3xl shadow-2xl border-t-8 border-pcgl-blue text-center relative overflow-hidden">
+                        {activeSessionData.isClosed ? (
+                            <div className="absolute inset-0 bg-white/80 backdrop-blur-sm z-10 flex flex-col items-center justify-center">
+                                <div className="w-20 h-20 bg-red-100 text-red-600 rounded-full flex items-center justify-center mx-auto mb-4"><Ban size={40}/></div>
+                                <h2 className="text-3xl font-black text-pcgl-blue uppercase mb-2">Terminata</h2>
+                                <p className="text-gray-600 font-bold uppercase">Questa sessione è stata chiusa definitivamente</p>
+                            </div>
+                        ) : activeSessionData.isPaused && (
+                            <div className="absolute inset-0 bg-white/80 backdrop-blur-sm z-10 flex flex-col items-center justify-center">
+                                <div className="w-20 h-20 bg-orange-100 text-orange-600 rounded-full flex items-center justify-center mx-auto mb-4"><Pause size={40}/></div>
+                                <h2 className="text-3xl font-black text-pcgl-blue uppercase mb-2">In Pausa</h2>
+                                <p className="text-gray-600 font-bold uppercase mb-6">Le registrazioni sono momentaneamente chiuse</p>
+                                <button onClick={() => toggleSessionPause(activeSessionData)} className="py-4 px-8 rounded-full font-black uppercase text-sm shadow-lg transition-all flex items-center mx-auto bg-green-500 text-white hover:bg-green-600">
+                                    <Play className="mr-2" size={20}/>
+                                    Riattiva Registrazioni
+                                </button>
+                            </div>
+                        )}
+                        <h2 className="text-2xl font-black text-pcgl-blue uppercase mb-2">{activeSessionData.titolo}</h2>
+                        <div className="mb-6 flex justify-center gap-2">
+                           <span className="bg-gray-100 text-gray-500 px-3 py-1 rounded-full text-[10px] font-bold uppercase">{activeSessionData.tipo === 'evento' ? 'Evento in Campo' : 'Corso in Aula'}</span>
+                           <span className="bg-gray-100 text-gray-500 px-3 py-1 rounded-full text-[10px] font-bold uppercase">{activeSessionData.mode === 'interno' ? 'Solo App' : 'Aperto a Tutti'}</span>
+                        </div>
+
+                        {(!activeSessionData.tipo || activeSessionData.tipo === 'corso') ? (
+                            <>
+                                <p className="text-gray-500 mb-8 uppercase font-bold text-xs">Inquadra per registrare la presenza</p>
+                                <div className="inline-block p-4 bg-white rounded-3xl shadow-inner border-4 border-dashed border-gray-200 mb-6">
+                                    <img src={`https://api.qrserver.com/v1/create-qr-code/?size=400x400&data=${encodeURIComponent(window.location.origin + '?presenza=' + activeSessionData.id)}`} alt="QR Code Presenze" className={`w-64 h-64 object-contain mix-blend-multiply ${activeSessionData.isPaused ? 'opacity-20' : ''}`} />
+                                </div>
+                                <p className="text-sm font-bold text-gray-400">Oppure vai al link:</p>
+                                <p className="font-mono text-pcgl-blue text-xs mt-1 select-all">{window.location.origin}?presenza={activeSessionData.id}</p>
+                            </>
+                        ) : (
+                            <div className="py-8">
+                                <p className="text-gray-500 mb-6 uppercase font-bold text-sm">Registrazione Presenze Evento</p>
+                                <div className="w-24 h-24 bg-blue-50 text-pcgl-blue rounded-full flex items-center justify-center mx-auto mb-6 shadow-inner">
+                                    <QrCode size={48} />
+                                </div>
+                                <p className="text-sm text-gray-400 max-w-xs mx-auto">Utilizza il pulsante "Scansiona Tesserini" per inquadrare il codice QR dei volontari e registrarne l'effettiva presenza in campo.</p>
+                            </div>
+                        )}
+                        
+                        <div className="mt-8 pt-6 border-t border-gray-100 relative z-20">
+                            <div className="flex flex-wrap gap-4 justify-center">
+                                {activeSessionData.tipo === 'evento' && (
+                                    <button onClick={() => handleOpenScanner('session_checkin')} className="flex-1 min-w-[250px] py-4 px-8 rounded-full font-black uppercase text-sm shadow-lg transition-all flex items-center justify-center bg-pcgl-yellow text-pcgl-blue hover:bg-yellow-500 scale-105">
+                                        <ScanLine className="mr-2" size={20}/> Scansiona Tesserini
+                                    </button>
+                                )}
+                                {(!activeSessionData.tipo || activeSessionData.tipo === 'corso') && (
+                                    <button onClick={() => toggleSessionPause(activeSessionData)} className={`flex-1 min-w-[200px] py-4 px-8 rounded-full font-black uppercase text-sm shadow-lg transition-all flex items-center justify-center ${activeSessionData.isPaused ? 'bg-green-500 text-white hover:bg-green-600' : 'bg-orange-500 text-white hover:bg-orange-600'}`}>
+                                        {activeSessionData.isPaused ? <Play className="mr-2" size={20}/> : <Pause className="mr-2" size={20}/>}
+                                        {activeSessionData.isPaused ? 'Riattiva' : 'Pausa'}
+                                    </button>
+                                )}
+                                <button onClick={() => closeAttendanceSession(activeSessionData)} className="flex-1 min-w-[200px] py-4 px-8 rounded-full font-black uppercase text-sm shadow-lg transition-all flex items-center justify-center bg-red-600 text-white hover:bg-red-700">
+                                    <Ban className="mr-2" size={20}/> Chiudi Definitivamente
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+
+                    {/* LISTA PRESENZE IN TEMPO REALE */}
+                    <div className="bg-white p-6 rounded-3xl shadow-card border border-gray-100">
+                        <div className="flex justify-between items-center mb-6 border-b pb-4">
+                            <h3 className="font-black text-xl text-pcgl-blue uppercase flex items-center"><Users className="mr-2"/> Registrati ({sessionRecords.length})</h3>
+                            <div className="flex gap-2">
+                                <button onClick={() => {
+                                    const headers = ["Cognome Nome", "Email", "CF", "Ente", "Sede", "Data/Ora", "Validato", "Posizione GPS"];
+                                    const rows = sessionRecords.map(r => [
+                                        `${r.cognome} ${r.nome}`,
+                                        r.email,
+                                        r.cf || "N/D",
+                                        r.ente,
+                                        r.sede || "N/D",
+                                        new Date(r.timestamp).toLocaleString(),
+                                        r.validato ? "SI" : "NO",
+                                        r.verificato ? (r.distanza < 0.5 ? "IN ZONA" : `${r.distanza.toFixed(2)} km`) : (r.erroreGps || "N/A")
+                                    ]);
+                                    const csvContent = "data:text/csv;charset=utf-8," + [headers.join(","), ...rows.map(e => `"${e.join('","')}"`)].join("\n");
+                                    const link = document.createElement("a");
+                                    link.setAttribute("href", encodeURI(csvContent));
+                                    link.setAttribute("download", `presenze_${activeSessionData.titolo.replace(/[^a-z0-9]/gi, '_')}.csv`);
+                                    document.body.appendChild(link);
+                                    link.click();
+                                }} className="text-xs font-bold text-green-600 uppercase bg-green-50 px-3 py-2 rounded-lg hover:bg-green-100 inline-flex items-center">
+                                    <Download size={16} className="mr-1"/> Esporta CSV
+                                </button>
+                                <button onClick={() => deleteAttendanceSession(activeSessionData.id)} className="p-2 bg-red-50 text-red-500 rounded-lg hover:bg-red-100"><Trash2 size={20}/></button>
+                            </div>
+                        </div>
+                        <div className="space-y-3">
+                            {sessionRecords.length > 0 ? sessionRecords.map(r => (
+                                <div key={r.id} className={`p-4 rounded-xl border flex justify-between items-center transition-all ${r.validato ? 'bg-green-50 border-green-200' : 'bg-gray-50 border-gray-200'}`}>
+                                    <div>
+                                        <p className="font-bold uppercase text-pcgl-blue">{r.cognome} {r.nome}</p>
+                                        <p className="text-xs text-gray-500">{r.email} • {r.ente} {r.sede && r.sede !== 'N/D' ? `(${r.sede})` : ''}</p>
+                                        <p className="text-[10px] text-gray-400">{new Date(r.timestamp).toLocaleTimeString()}</p>
+                                        {activeSessionData.requireLocation && (
+                                            <p className={`text-[10px] font-bold mt-1 ${r.verificato ? (r.distanza < 0.5 ? 'text-green-600' : 'text-orange-500') : 'text-red-500'}`}>
+                                                📍 GPS: {r.verificato ? (r.distanza < 0.5 ? 'In Zona' : `${r.distanza.toFixed(2)} km di distanza`) : (r.erroreGps || 'Non rilevato')}
+                                            </p>
+                                        )}
+                                    </div>
+                                    <button onClick={() => togglePresenceValidation(r.id, r.validato)} className={`p-3 rounded-xl shadow-md transition-all ${r.validato ? 'bg-green-500 text-white' : 'bg-white border text-gray-400 hover:text-green-500'}`}>
+                                        <CheckCircle size={24} />
+                                    </button>
+                                </div>
+                            )) : <p className="text-center text-gray-400 italic py-8">In attesa di scansioni...</p>}
+                        </div>
+                    </div>
+
+                    {/* STORICO SOSPENSIONI */}
+                    {activeSessionData.pauseHistory && activeSessionData.pauseHistory.length > 0 && (
+                        <div className="bg-white p-6 rounded-3xl shadow-card border border-gray-100">
+                            <h3 className="font-black text-lg text-pcgl-blue uppercase flex items-center mb-4"><Clock className="mr-2"/> Storico Sospensioni</h3>
+                            <div className="space-y-3 max-h-40 overflow-y-auto pr-2">
+                                {[...activeSessionData.pauseHistory].reverse().map((evento, idx) => (
+                                    <div key={idx} className={`p-3 rounded-xl border text-xs ${evento.isPaused ? 'bg-orange-50 border-orange-100' : 'bg-green-50 border-green-100'}`}>
+                                        <div className="flex justify-between items-center mb-1">
+                                            <span className={`font-bold uppercase ${evento.isPaused ? 'text-orange-700' : 'text-green-700'}`}>
+                                                {evento.isPaused ? 'Messa in Pausa' : 'Riattivata'}
+                                            </span>
+                                            <span className="text-gray-500">{new Date(evento.timestamp).toLocaleString()}</span>
+                                        </div>
+                                        <p className="text-gray-600">Da: <strong>{evento.autore}</strong></p>
+                                        {evento.messaggio && <p className="text-gray-500 italic mt-1">"{evento.messaggio}"</p>}
+                                    </div>
+                                ))}
+                            </div>
+                        </div>
+                    )}
+                </div>
+            ) : (
+                <div className="space-y-8 font-sans text-pcgl-text-dark">
+                    <div className="bg-white p-6 rounded-3xl shadow-card border border-gray-100">
+                        <h3 className="font-bold text-lg text-pcgl-blue mb-4 uppercase">Nuova Sessione Presenze</h3>
+                        <div className="space-y-4">
+                            <input type="text" placeholder="Nome Sessione/Evento (es. Lezione 1 AIB)" className="w-full p-4 bg-gray-50 rounded-xl border border-gray-200 font-bold uppercase text-sm focus:border-pcgl-yellow" value={newSessionTitle} onChange={e => setNewSessionTitle(e.target.value)} />
+                            
+                            <div className="grid grid-cols-2 gap-4">
+                                <select className="p-3 bg-gray-50 rounded-xl border border-gray-200 font-medium text-sm" value={newSessionType} onChange={e => setNewSessionType(e.target.value)}>
+                                    <option value="corso">Corso (QR in vista)</option>
+                                    <option value="evento">Evento (Presidente Scansiona)</option>
+                                </select>
+                                <select className="p-3 bg-gray-50 rounded-xl border border-gray-200 font-medium text-sm" value={newSessionMode} onChange={e => setNewSessionMode(e.target.value)}>
+                                    <option value="esterno">Aperto a Tutti (Esterno)</option>
+                                    <option value="interno">Solo Utenti App (Interno)</option>
+                                </select>
+                            </div>
+
+                            <label className="flex items-center space-x-2 bg-gray-50 p-3 rounded-xl border border-gray-200 cursor-pointer">
+                                <input type="checkbox" checked={newSessionRequireLocation} onChange={e => setNewSessionRequireLocation(e.target.checked)} className="rounded text-pcgl-blue focus:ring-pcgl-blue" />
+                                <span className="text-[10px] font-bold text-gray-600 uppercase">Verifica Posizione</span>
+                            </label>
+
+                            {newSessionRequireLocation && (
+                                <button onClick={() => setShowSessionLocationPicker(true)} className="w-full py-3 bg-white border border-gray-200 text-pcgl-blue rounded-xl text-sm font-bold uppercase hover:bg-gray-50 transition-all">
+                                    <MapPin size={16} className="inline mr-2"/> {newSessionLocation ? 'Posizione Impostata (Modifica)' : 'Imposta Posizione su Mappa'}
+                                </button>
+                            )}
+
+                            <button onClick={createAttendanceSession} className="w-full py-4 bg-pcgl-blue text-white rounded-xl shadow-md font-bold uppercase flex justify-center items-center"><Plus size={20} className="mr-2"/> Crea Sessione</button>
+                        </div>
+                    </div>
+                    
+                    <div className="bg-white p-6 rounded-3xl shadow-card border border-gray-100">
+                        <h3 className="font-bold text-lg text-pcgl-blue mb-4 uppercase">Archivio Sessioni</h3>
+                        <div className="space-y-3">
+                            {attendanceSessions.map(session => {
+                                return (
+                                    <div key={session.id} onClick={() => setSelectedSession(session)} className="bg-gray-50 p-4 rounded-xl border border-gray-200 cursor-pointer hover:bg-blue-50 transition-colors flex justify-between items-center">
+                                        <div>
+                                            <div className="flex items-center gap-2">
+                                                <p className="font-bold text-pcgl-blue uppercase">{session.titolo}</p>
+                                                {session.isClosed && <span className="bg-red-100 text-red-600 text-[9px] font-bold px-2 py-0.5 rounded uppercase">Terminata</span>}
+                                            </div>
+                                            <p className="text-xs text-gray-500">{new Date(session.dataCreazione).toLocaleDateString()} • Creata da {session.creatore}</p>
+                                        </div>
+                                        <QrCode size={24} className="text-gray-400"/>
+                                    </div>
+                                )
+                            })}
+                            {attendanceSessions.length === 0 && <p className="text-center text-gray-400 italic">Nessuna sessione creata.</p>}
+                        </div>
+                    </div>
+
+                    {showSessionLocationPicker && (
+                        <LocationPicker initialPos={newSessionLocation} onConfirm={(pos) => { setNewSessionLocation(pos); setShowSessionLocationPicker(false); showToast("Posizione impostata"); }} onClose={() => setShowSessionLocationPicker(false)} />
+                    )}
+                </div>
+            )}
+        </div>
+      );
+      }
 
       case 'admin_search': return (
-        <div className="animate-in slide-in-from-right duration-500 w-full pb-40">
+        <div className="animate-in slide-in-from-right duration-500 w-full pb-40 print:pb-0">
+          <div className="print:hidden">
           <HeaderSub title="Anagrafica" onBack={() => {
               if (previousPage === 'sedi_list') {
                   setSubPage('sedi_list');
@@ -4956,7 +5908,7 @@ function AppContent() {
               onClick={() => setAnagraficaTab('iscritti')}
               className={`flex-1 py-3 rounded-lg text-xs font-black uppercase tracking-wide transition-all ${anagraficaTab === 'iscritti' ? 'bg-white text-pcgl-blue shadow-sm' : 'text-gray-400 hover:text-gray-600'}`}
             >
-              Iscritti
+              Iscritti {totalUsersCount !== null && <span className={`ml-2 text-white text-[10px] px-2 py-0.5 rounded-full ${anagraficaTab === 'iscritti' ? 'bg-pcgl-blue' : 'bg-gray-400'}`}>{totalUsersCount}</span>}
             </button>
             <button 
               onClick={() => setAnagraficaTab('pendenti')}
@@ -4967,24 +5919,34 @@ function AppContent() {
           </div>
 
           {/* Filtri e Azioni */}
-          <div className="flex gap-2 mb-4">
-             <input type="text" placeholder="Cerca (Cognome, CF, Tessera)..." className="flex-1 p-4 bg-white shadow-card rounded-lg font-medium border border-gray-200 outline-none focus:border-pcgl-yellow transition-all text-base" onChange={e => setSearchTerm(e.target.value)} onKeyPress={e => e.key === 'Enter' && searchVolunteersDB()} />
-             <button onClick={searchVolunteersDB} className="p-4 bg-pcgl-blue text-white rounded-lg shadow-md"><Search size={20}/></button>
-             <select className="p-4 bg-white shadow-card rounded-lg font-medium border border-gray-200 outline-none focus:border-pcgl-yellow transition-all text-base max-w-[150px]" value={filterSede} onChange={e => handleSedeFilterChange(e.target.value)}>
-                <option value="">Tutte le Sedi</option>
-                {sediDisponibili.map(s => <option key={s} value={s}>{s}</option>)}
-             </select>
-             <select className="p-4 bg-white shadow-card rounded-lg font-medium border border-gray-200 outline-none focus:border-pcgl-yellow transition-all text-base max-w-[150px]" value={filterStato} onChange={e => setFilterStato(e.target.value)}>
-                <option value="attivo">Attivi</option>
-                <option value="sospeso">Sospesi</option>
-                <option value="tutti">Tutti</option>
-             </select>
-             <select className="p-4 bg-white shadow-card rounded-lg font-medium border border-gray-200 outline-none focus:border-pcgl-yellow transition-all text-base max-w-[150px]" value={filterSpecializzazione} onChange={e => setFilterSpecializzazione(e.target.value)}>
-                <option value="">Tutte le Specializzazioni</option>
-                {appConfig.specs.map(s => <option key={s} value={s}>{s}</option>)}
-             </select>
-             <button onClick={() => setShowMassMail(true)} className="p-4 bg-pcgl-blue text-white rounded-lg shadow-md"><Mail size={20}/></button>
-             {userData.ruolo === 'presidente' && <button onClick={() => window.print()} className="p-4 bg-white text-pcgl-blue border border-pcgl-blue rounded-lg shadow-md"><Printer size={20}/></button>}
+          <div className="flex flex-col gap-3 mb-6">
+             <div className="flex gap-2">
+                 <input type="text" placeholder="Cerca (Cognome, CF, Tessera)..." className="flex-1 p-4 bg-white shadow-card rounded-lg font-medium border border-gray-200 outline-none focus:border-pcgl-yellow transition-all text-sm sm:text-base" onChange={e => setSearchTerm(e.target.value)} onKeyPress={e => e.key === 'Enter' && searchVolunteersDB()} />
+                 <button onClick={searchVolunteersDB} className="p-4 bg-pcgl-blue text-white rounded-lg shadow-md shrink-0"><Search size={20}/></button>
+             </div>
+             <div className="flex flex-wrap gap-2">
+                 {['admin', 'superadmin', 'coordinamento'].includes(userData.ruolo) && (
+                     <button onClick={loadAllVolunteers} className="flex-1 min-w-[100px] max-w-[150px] p-3 bg-pcgl-yellow text-pcgl-blue rounded-lg shadow-md font-bold text-xs uppercase" title="Carica Tutti">Tutti</button>
+                 )}
+                 {['admin', 'superadmin', 'coordinamento', 'presidente'].includes(userData.ruolo) && (
+                     <button onClick={() => setShowExportModal(true)} className="flex-1 min-w-[100px] max-w-[150px] p-3 bg-green-600 text-white rounded-lg shadow-md font-bold text-xs uppercase flex items-center justify-center" title="Esporta CSV"><FileSpreadsheet size={16} className="mr-1"/> CSV</button>
+                 )}
+                 <select className="flex-1 min-w-[140px] p-3 bg-white shadow-card rounded-lg font-medium border border-gray-200 outline-none focus:border-pcgl-yellow transition-all text-sm" value={filterSede} onChange={e => handleSedeFilterChange(e.target.value)}>
+                    <option value="">Tutte le Sedi</option>
+                    {sediDisponibili.map(s => <option key={s} value={s}>{s}</option>)}
+                 </select>
+                 <select className="flex-1 min-w-[100px] p-3 bg-white shadow-card rounded-lg font-medium border border-gray-200 outline-none focus:border-pcgl-yellow transition-all text-sm" value={filterStato} onChange={e => setFilterStato(e.target.value)}>
+                    <option value="attivo">Attivi</option>
+                    <option value="sospeso">Sospesi</option>
+                    <option value="tutti">Tutti</option>
+                 </select>
+                 <select className="flex-1 min-w-[160px] p-3 bg-white shadow-card rounded-lg font-medium border border-gray-200 outline-none focus:border-pcgl-yellow transition-all text-sm" value={filterSpecializzazione} onChange={e => setFilterSpecializzazione(e.target.value)}>
+                    <option value="">Specializzazioni (Tutte)</option>
+                    {appConfig.specs.map(s => <option key={s} value={s}>{s}</option>)}
+                 </select>
+                 <button onClick={() => setShowMassMail(true)} className="p-3 bg-pcgl-blue text-white rounded-lg shadow-md flex-none"><Mail size={20}/></button>
+                 {userData.ruolo === 'presidente' && <button onClick={() => window.print()} className="p-3 bg-white text-pcgl-blue border border-pcgl-blue rounded-lg shadow-md flex-none"><Printer size={20}/></button>}
+             </div>
           </div>
 
           {/* Modale Invio Massivo */}
@@ -5003,6 +5965,61 @@ function AppContent() {
                       const matchesSpec = filterSpecializzazione ? v.specializzazioni?.includes(filterSpecializzazione) : true;
                       return matchesSearch && matchesTab && matchesSede && matchesSpec;
                   }))} className="flex-1 py-3 bg-pcgl-blue text-white rounded-xl font-bold">Invia</button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Modale Esportazione CSV */}
+          {showExportModal && (
+            <div className="fixed inset-0 bg-black/50 z-[200] flex items-center justify-center p-4 animate-in fade-in">
+              <div className="bg-white p-6 rounded-3xl w-full max-w-xl shadow-2xl relative max-h-[90vh] flex flex-col">
+                <button onClick={() => setShowExportModal(false)} className="absolute top-4 right-4 text-gray-400 hover:text-gray-600"><X size={24}/></button>
+                <h3 className="font-black text-xl mb-4 text-pcgl-blue uppercase">Esporta Report CSV</h3>
+                
+                <div className="flex-1 overflow-y-auto pr-2 space-y-6">
+                    <div>
+                        <h4 className="font-bold text-sm text-gray-600 uppercase mb-3 border-b pb-1">Seleziona Colonne da Esportare</h4>
+                        <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+                            {Object.keys(exportColumns).map(col => (
+                                <label key={col} className="flex items-center space-x-2 cursor-pointer bg-gray-50 p-2 rounded-lg border border-gray-100 hover:bg-gray-100 transition-colors">
+                                    <input 
+                                        type="checkbox" 
+                                        checked={exportColumns[col]} 
+                                        onChange={e => setExportColumns({...exportColumns, [col]: e.target.checked})} 
+                                        className="rounded text-pcgl-blue focus:ring-pcgl-blue" 
+                                    />
+                                    <span className="text-xs font-medium text-gray-700 uppercase">{col}</span>
+                                </label>
+                            ))}
+                        </div>
+                    </div>
+
+                    <div>
+                        <h4 className="font-bold text-sm text-gray-600 uppercase mb-3 border-b pb-1">Filtri Aggiuntivi</h4>
+                        <div className="space-y-3">
+                            <div>
+                                <label className="text-[10px] font-bold uppercase text-gray-400">Filtra per Regione (Prefisso Zona Sede)</label>
+                                <select className="w-full p-3 bg-gray-50 rounded-xl border border-gray-200 text-sm font-medium focus:border-pcgl-yellow outline-none" value={exportFilters.regione} onChange={e => setExportFilters({...exportFilters, regione: e.target.value})}>
+                                    <option value="">Tutte le Regioni</option>
+                                    <option value="BASI">Basilicata</option>
+                                    <option value="Cal">Calabria</option>
+                                    <option value="Camp">Campania</option>
+                                </select>
+                            </div>
+                            <div>
+                                <label className="text-[10px] font-bold uppercase text-gray-400">Filtra per Città di Residenza</label>
+                                <input type="text" placeholder="Es. Potenza" className="w-full p-3 bg-gray-50 rounded-xl border border-gray-200 text-sm font-medium focus:border-pcgl-yellow outline-none" value={exportFilters.citta} onChange={e => setExportFilters({...exportFilters, citta: e.target.value})} />
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div className="flex gap-2 mt-6 pt-4 border-t border-gray-100">
+                  <button onClick={() => setShowExportModal(false)} className="flex-1 py-3 bg-gray-200 text-gray-600 rounded-xl font-bold uppercase hover:bg-gray-300 transition-colors">Annulla</button>
+                  <button onClick={executeCSVExport} className="flex-[2] py-3 bg-pcgl-blue text-pcgl-yellow rounded-xl font-bold uppercase shadow-md flex items-center justify-center hover:bg-pcgl-yellow hover:text-pcgl-blue transition-all">
+                      <Download className="mr-2" size={20}/> Scarica CSV
+                  </button>
                 </div>
               </div>
             </div>
@@ -5030,6 +6047,9 @@ function AppContent() {
                   <div>
                       <p className="font-bold text-base uppercase leading-tight">{v.nome} {v.cognome}</p>
                       <p className="text-xs font-medium text-gray-500 uppercase tracking-wide mt-0.5">{v.sede} • {v.cf}</p>
+                      {['admin', 'superadmin', 'coordinamento'].includes(userData.ruolo) && v.ultimoAccesso && (
+                          <p className="text-[9px] font-bold text-gray-400 uppercase tracking-wide mt-0.5">Accesso: {new Date(v.ultimoAccesso).toLocaleString()}</p>
+                      )}
                       {v.moduli && v.moduli.length > 0 && (
                           <div className="flex flex-wrap gap-1 mt-1">
                               {v.moduli.map((m, i) => <span key={i} className="text-[9px] font-bold bg-blue-50 text-blue-600 px-1.5 py-0.5 rounded border border-blue-100 uppercase">{m}</span>)}
@@ -5093,17 +6113,27 @@ function AppContent() {
                 </p>
             )}
           </div>
+          </div>
 
           {/* SEZIONE STAMPA REPORT (NASCOSTA A VIDEO) */}
-          <div className="hidden print:block fixed inset-0 bg-white z-[300] p-8">
-            <h1 className="text-2xl font-black mb-4">Report Volontari - Sede {userData.sede}</h1>
+          <div className="hidden print:block w-full bg-white p-8 text-black font-sans">
+            <h1 className="text-2xl font-black mb-4">
+              Report Volontari {filterSede ? `- Sede ${filterSede}` : (userData.ruolo === 'presidente' ? `- Sede ${userData.sede}` : '- Tutte le Sedi')}
+            </h1>
             <table className="w-full text-left text-sm">
-              <thead><tr className="border-b"><th className="py-2">Cognome Nome</th><th className="py-2">CF</th><th className="py-2">Ruolo</th></tr></thead>
+              <thead><tr className="border-b"><th className="py-2">Cognome Nome</th><th className="py-2">CF</th><th className="py-2">Sede</th><th className="py-2">Ruolo</th></tr></thead>
               <tbody>
-                {(userData.ruolo === 'presidente' ? allUsers : searchedVolunteers).filter(v => v.sede === userData.sede && v.stato === 'attivo').map(v => (
+                {(anagraficaTab === 'pendenti' ? pendingVolunteers : (userData.ruolo === 'presidente' ? allUsers : searchedVolunteers)).filter(v => {
+                    const matchesSearch = (v.nome + v.cognome + v.sede).toLowerCase().includes(searchTerm.toLowerCase());
+                    const matchesTab = anagraficaTab === 'iscritti' ? (filterStato === 'tutti' ? ['attivo', 'sospeso'].includes(v.stato) : v.stato === filterStato) : v.stato === 'pendente';
+                    const matchesSede = userData.ruolo === 'presidente' ? v.sede === userData.sede : (filterSede ? v.sede === filterSede : true);
+                    const matchesSpec = filterSpecializzazione ? v.specializzazioni?.includes(filterSpecializzazione) : true;
+                    return matchesSearch && matchesTab && matchesSede && matchesSpec;
+                }).map(v => (
                   <tr key={v.id} className="border-b">
                     <td className="py-2">{v.cognome} {v.nome}</td>
                     <td className="py-2">{v.cf}</td>
+                    <td className="py-2">{v.sede}</td>
                     <td className="py-2">{v.ruolo}</td>
                   </tr>
                 ))}
@@ -5114,7 +6144,8 @@ function AppContent() {
       );
 
       case 'volunteer_detail': return (
-        <div className="animate-in slide-in-from-right duration-500 w-full pb-40">
+        <div className="animate-in slide-in-from-right duration-500 w-full pb-40 print:pb-0">
+          <div className="print:hidden">
           <HeaderSub title="Dettaglio Volontario" onBack={() => setSubPage(previousPage)} />
           {selectedVolunteer && (
              <div className="space-y-8 font-sans text-pcgl-text-dark">
@@ -5129,6 +6160,7 @@ function AppContent() {
                    <p className="text-xs text-gray-400 mt-1">Tessera: {selectedVolunteer.numeroTessera}</p>
                    {selectedVolunteer.telefono && <p className="text-xs text-gray-400 mt-1">Tel: {selectedVolunteer.telefono}</p>}
                    {selectedVolunteer.gruppoSanguigno && <p className="text-xs text-gray-400 mt-1">Gruppo: {selectedVolunteer.gruppoSanguigno}</p>}
+                   {selectedVolunteer.ultimoAccesso && ['admin', 'superadmin', 'coordinamento'].includes(userData.ruolo) && <p className="text-xs text-gray-400 mt-1 font-bold">Ultimo Accesso App: {new Date(selectedVolunteer.ultimoAccesso).toLocaleString()}</p>}
                    <div className="flex flex-wrap gap-1 justify-center mt-2">
                        {selectedVolunteer.moduli?.map(m => <span key={m} className="text-[10px] font-bold bg-blue-50 text-blue-600 px-2 py-1 rounded border border-blue-100 uppercase">{m}</span>)}
                    </div>
@@ -5196,6 +6228,11 @@ function AppContent() {
                              <p className="text-xs text-gray-400">{new Date(c.data).toLocaleDateString()} • {c.certificato ? 'Certificato PCGL' : 'Autodichiarato'}</p>
                            </div>
                            {c.certificato ? <Verified className="text-green-600" size={20}/> : <FileText className="text-gray-400" size={20}/>}
+                           {c.tipo === 'moodle' ? (
+                               <button onClick={() => window.open(`https://formazione.pcgl.it/course/view.php?id=${c.moodleId}`, '_blank')} className="p-2 bg-blue-100 text-blue-700 rounded-lg hover:bg-blue-200 transition-colors shadow-sm" title="Scarica/Apri Attestato Moodle">
+                                   <Award size={20} />
+                               </button>
+                           ) : (c.certificato ? <Verified className="text-green-600" size={20}/> : <FileText className="text-gray-400" size={20}/>)}
                         </div>
                       )) : <p className="text-center text-gray-400 text-sm py-4">Nessun corso presente nel fascicolo.</p>}
                    </div>
@@ -5218,10 +6255,11 @@ function AppContent() {
                 </div>
              </div>
           )}
+          </div>
 
           {/* LAYOUT DI STAMPA FASCICOLO (NASCOSTO A VIDEO) */}
           {selectedVolunteer && (
-            <div className="hidden print:block fixed inset-0 bg-white z-[1000] p-12 text-black font-sans">
+            <div className="hidden print:block w-full bg-white p-8 text-black font-sans">
                 <div className="flex items-center justify-between border-b-4 border-[#001a33] pb-6 mb-8">
                     <div>
                         <h1 className="text-4xl font-black uppercase text-[#001a33] leading-none">Fascicolo Volontario</h1>
@@ -5275,11 +6313,246 @@ function AppContent() {
                         <tbody>{selectedVolunteer.fascicoloCorsi?.length > 0 ? selectedVolunteer.fascicoloCorsi.map((c, i) => (<tr key={i} className="border-b border-gray-200"><td className="p-3 font-mono text-xs">{new Date(c.data).toLocaleDateString()}</td><td className="p-3 font-bold uppercase">{c.titolo}</td><td className="p-3 text-xs uppercase">{c.certificato ? 'PC Gruppo Lucano' : 'Esterno'}</td><td className="p-3 text-center">{c.certificato ? <span className="text-green-700 font-bold text-[10px] uppercase border border-green-200 px-2 py-0.5 rounded">Certificato</span> : <span className="text-gray-500 text-[10px] uppercase border border-gray-200 px-2 py-0.5 rounded">Autodichiarato</span>}</td></tr>)) : <tr><td colSpan="4" className="p-4 text-center italic text-gray-400">Nessun corso presente nel fascicolo.</td></tr>}</tbody>
                     </table>
                 </div>
-                <div className="fixed bottom-8 left-0 w-full text-center"><p className="text-[10px] text-gray-400 uppercase font-bold">Documento generato automaticamente il {new Date().toLocaleDateString()} {new Date().toLocaleTimeString()} • PCGL.IT</p></div>
+                <div className="mt-8 text-center border-t border-gray-200 pt-4"><p className="text-[10px] text-gray-400 uppercase font-bold">Documento generato automaticamente il {new Date().toLocaleDateString()} {new Date().toLocaleTimeString()} • PCGL.IT</p></div>
             </div>
           )}
         </div>
       );
+
+      case 'progetti_view': 
+        const canManageAree = ['admin', 'superadmin', 'coordinamento'].includes(userData.ruolo);
+        return (
+          <div className="animate-in slide-in-from-right duration-500 w-full pb-40">
+              <HeaderSub title="Progetti & Campi" onBack={() => setSubPage(null)} />
+              
+              {canManageAree && (
+                  <div className="mb-8">
+                      <button onClick={() => { setAreaForm({ id: null, titolo: '', descrizione: '', sediAbilitate: [], utentiAbilitati: [], linkDrive: '', immagineCopertina: '' }); setShowAreaModal(true); setAreaUserSearch(''); setAreaUserResults([]); }} className="w-full py-4 bg-pcgl-blue text-pcgl-yellow rounded-xl font-bold uppercase shadow-md flex justify-center items-center">
+                          <Plus className="mr-2"/> Crea Nuovo Progetto
+                      </button>
+                  </div>
+              )}
+
+              <div className="space-y-4">
+                  {areeTematiche.filter(a => canManageAree || a.sediAbilitate?.includes(userData.sede) || a.utentiAbilitati?.includes(userData.uid)).map(area => (
+                      <div key={area.id} className="bg-white p-6 rounded-3xl shadow-card border border-gray-100">
+                          {area.immagineCopertina && (
+                              <div className="w-full h-32 mb-4 rounded-xl overflow-hidden bg-gray-100">
+                                  <img src={area.immagineCopertina} className="w-full h-full object-cover" alt={area.titolo} />
+                              </div>
+                          )}
+                          <div className="flex justify-between items-start mb-4">
+                              <div>
+                                  <h3 className="font-black text-xl text-pcgl-blue uppercase">{area.titolo}</h3>
+                                  <p className="text-sm text-gray-500 mt-1">{area.descrizione}</p>
+                                  <p className="text-xs text-gray-400 mt-2 font-bold uppercase">Sedi Abilitate: {area.sediAbilitate?.length > 0 ? area.sediAbilitate.length : 'Nessuna'} | Utenti Singoli: {area.utentiAbilitati?.length > 0 ? area.utentiAbilitati.length : 'Nessuno'}</p>
+                              </div>
+                              {canManageAree && (
+                                  <div className="flex gap-2">
+                                      <button onClick={() => { setAreaForm({...area, utentiAbilitati: area.utentiAbilitati || []}); setShowAreaModal(true); setAreaUserSearch(''); setAreaUserResults([]); }} className="p-2 bg-blue-50 text-blue-600 rounded-lg"><Pencil size={18}/></button>
+                                      <button onClick={() => deleteArea(area.id)} className="p-2 bg-red-50 text-red-600 rounded-lg"><Trash2 size={18}/></button>
+                                  </div>
+                              )}
+                          </div>
+                          <button onClick={() => { setViewingArea(area); setSubPage('area_detail_view'); }} className="w-full py-3 bg-gray-100 text-pcgl-blue rounded-xl font-bold uppercase text-sm hover:bg-gray-200 transition-colors">
+                              Accedi alla Bacheca
+                          </button>
+                      </div>
+                  ))}
+                  {areeTematiche.filter(a => canManageAree || a.sediAbilitate?.includes(userData.sede) || a.utentiAbilitati?.includes(userData.uid)).length === 0 && (
+                      <p className="text-center text-gray-500 font-medium py-8">Nessun progetto o campo scuola disponibile.</p>
+                  )}
+              </div>
+
+              {/* MODALE CREAZIONE/MODIFICA AREA TEMATICA */}
+              {showAreaModal && (
+                  <div className="fixed inset-0 bg-black/80 z-[1500] flex items-center justify-center p-4 animate-in fade-in">
+                      <div className="bg-white w-full max-w-2xl rounded-3xl p-6 shadow-2xl relative max-h-[90vh] overflow-y-auto">
+                          <button onClick={() => setShowAreaModal(false)} className="absolute top-4 right-4 text-gray-400"><X/></button>
+                          <h3 className="font-black text-xl text-pcgl-blue uppercase mb-4">{areaForm.id ? 'Modifica Progetto' : 'Nuovo Progetto'}</h3>
+                          <div className="space-y-4">
+                              <input type="text" placeholder="Titolo Progetto (es. Campi Scuola 2026)" className="w-full p-3 bg-gray-50 rounded-xl border font-bold uppercase" value={areaForm.titolo} onChange={e => setAreaForm({...areaForm, titolo: e.target.value})} />
+                              <textarea placeholder="Descrizione o info generali" className="w-full p-3 bg-gray-50 rounded-xl border resize-none h-24" value={areaForm.descrizione} onChange={e => setAreaForm({...areaForm, descrizione: e.target.value})} />
+                              <input type="text" placeholder="Link Cartella Condivisa (Es. Google Drive)" className="w-full p-3 bg-gray-50 rounded-xl border text-sm" value={areaForm.linkDrive || ''} onChange={e => setAreaForm({...areaForm, linkDrive: e.target.value})} />
+                              
+                              <div>
+                                  <label className="text-xs font-bold uppercase text-gray-400 mb-2 block">Immagine Copertina (Opzionale)</label>
+                                  <div className="flex items-center gap-4">
+                                      {areaForm.immagineCopertina && <img src={areaForm.immagineCopertina} className="w-16 h-16 object-cover rounded-xl border border-gray-200" alt="Cover" />}
+                                      <label className="px-4 py-2 bg-gray-100 text-gray-600 rounded-xl font-bold text-xs uppercase cursor-pointer hover:bg-gray-200 transition-colors shadow-sm">
+                                          {uploading ? 'Caricamento...' : 'Carica Immagine'}
+                                          <input type="file" accept="image/*" className="hidden" disabled={uploading} onChange={async (e) => {
+                                              const file = e.target.files[0];
+                                              if (!file) return;
+                                              if (file.size > 5 * 1024 * 1024) { showToast("Max 5MB", "error"); return; }
+                                              setUploading(true);
+                                              try { const storageRef = ref(storage, `aree_tematiche_covers/${Date.now()}_${file.name}`); await uploadBytes(storageRef, file); const url = await getDownloadURL(storageRef); setAreaForm(prev => ({...prev, immagineCopertina: url})); showToast("Immagine caricata!"); } catch (err) { console.error(err); showToast("Errore upload", "error"); } finally { setUploading(false); }
+                                          }} />
+                                      </label>
+                                      {areaForm.immagineCopertina && <button onClick={() => setAreaForm({...areaForm, immagineCopertina: ''})} className="p-2 text-red-500 hover:bg-red-50 rounded-lg"><Trash2 size={16}/></button>}
+                                  </div>
+                              </div>
+                              
+                              <div>
+                                  <label className="text-xs font-bold uppercase text-gray-400 mb-2 block">Utenti Abilitati (Singoli)</label>
+                                  <div className="flex gap-2 mb-2">
+                                      <input type="text" placeholder="Cerca cognome..." className="flex-1 p-3 bg-gray-50 rounded-xl border text-sm uppercase" value={areaUserSearch} onChange={e => setAreaUserSearch(e.target.value)} onKeyPress={e => e.key === 'Enter' && searchAreaUser()} />
+                                      <button onClick={(e) => { e.preventDefault(); searchAreaUser(); }} className="p-3 bg-pcgl-blue text-white rounded-xl"><Search size={20}/></button>
+                                  </div>
+                                  {areaUserResults.length > 0 && (
+                                      <div className="mt-2 bg-white border rounded-xl overflow-hidden shadow-sm mb-2">
+                                          {areaUserResults.map(u => (
+                                              <div key={u.id} onClick={() => { 
+                                                  if (!(areaForm.utentiAbilitati || []).includes(u.id)) { setAreaForm({...areaForm, utentiAbilitati: [...(areaForm.utentiAbilitati || []), u.id]}); }
+                                                  setAreaUserResults([]); setAreaUserSearch(''); 
+                                              }} className="p-2 hover:bg-gray-50 cursor-pointer text-xs border-b last:border-0">{u.cognome} {u.nome} ({u.sede})</div>
+                                          ))}
+                                      </div>
+                                  )}
+                                  <div className="flex flex-wrap gap-2">
+                                      {(areaForm.utentiAbilitati || []).map(uid => (
+                                          <span key={uid} className="px-2 py-1 bg-gray-100 border rounded-lg text-xs font-bold uppercase flex items-center">{getName(uid)} <button onClick={() => setAreaForm({...areaForm, utentiAbilitati: areaForm.utentiAbilitati.filter(id => id !== uid)})} className="ml-1 text-red-500"><X size={12}/></button></span>
+                                      ))}
+                                  </div>
+                              </div>
+                              
+                              <div>
+                                  <label className="text-xs font-bold uppercase text-gray-400 mb-2 block">Sedi Abilitate</label>
+                                  <div className="flex justify-between items-center mb-2 px-1">
+                                      <button onClick={() => setAreaForm({...areaForm, sediAbilitate: areaForm.sediAbilitate.length === sediDisponibili.length ? [] : [...sediDisponibili]})} className="px-3 py-1 bg-blue-50 text-pcgl-blue rounded-lg text-xs font-bold uppercase hover:bg-blue-100 transition-colors">
+                                          {areaForm.sediAbilitate.length === sediDisponibili.length ? 'Deseleziona Tutte' : 'Seleziona Tutte'}
+                                      </button>
+                                  </div>
+                                  <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 max-h-40 overflow-y-auto p-2 border rounded-lg">
+                                      {sediDisponibili.map(s => (
+                                          <div key={s} onClick={() => {
+                                              const sedi = areaForm.sediAbilitate.includes(s) ? areaForm.sediAbilitate.filter(x => x !== s) : [...areaForm.sediAbilitate, s];
+                                              setAreaForm({...areaForm, sediAbilitate: sedi});
+                                          }} className={`p-2 text-xs font-bold rounded cursor-pointer border ${areaForm.sediAbilitate.includes(s) ? 'bg-pcgl-blue text-white' : 'bg-gray-50'}`}>
+                                              {s}
+                                          </div>
+                                      ))}
+                                  </div>
+                              </div>
+
+                              <button onClick={saveArea} className="w-full py-3 bg-pcgl-blue text-white rounded-xl font-bold uppercase shadow-lg mt-4">Salva Progetto</button>
+                          </div>
+                      </div>
+                  </div>
+              )}
+          </div>
+        );
+
+      case 'area_detail_view': 
+        const isAreaManager = ['admin', 'superadmin', 'coordinamento'].includes(userData.ruolo);
+        return (
+          <div className="animate-in slide-in-from-right duration-500 w-full pb-40">
+              <HeaderSub title="Bacheca Progetto" onBack={() => { setSubPage('progetti_view'); setViewingArea(null); }} />
+              {viewingArea && (
+                  <div className="space-y-6">
+                      <div className="bg-white p-6 rounded-3xl shadow-card border border-gray-100">
+                          {viewingArea.immagineCopertina && (
+                              <div className="w-full h-48 mb-6 rounded-2xl overflow-hidden bg-gray-100 shadow-inner">
+                                  <img src={viewingArea.immagineCopertina} className="w-full h-full object-cover" alt={viewingArea.titolo} />
+                              </div>
+                          )}
+                          <h3 className="font-black text-2xl text-pcgl-blue uppercase mb-2">{viewingArea.titolo}</h3>
+                          <p className="text-sm text-gray-600">{viewingArea.descrizione}</p>
+                          {viewingArea.linkDrive ? (
+                              <div className="mt-4 flex items-center gap-2">
+                                  <a href={viewingArea.linkDrive} target="_blank" rel="noopener noreferrer" className="inline-flex items-center px-4 py-2 bg-blue-50 text-blue-700 rounded-xl font-bold text-sm shadow-sm hover:bg-blue-100 transition-colors">
+                                      <LinkIcon className="mr-2" size={16}/> Apri Cartella Esterna
+                                  </a>
+                                  {isAreaManager && (
+                                      <button onClick={async () => {
+                                          const newLink = window.prompt("Modifica il link della cartella condivisa:", viewingArea.linkDrive);
+                                          if (newLink !== null) { try { await updateDoc(doc(db, 'aree_tematiche', viewingArea.id), { linkDrive: newLink }); showToast("Link aggiornato!"); } catch (e) { console.error(e); } }
+                                      }} className="p-2 text-gray-400 hover:text-pcgl-blue" title="Modifica Link"><Pencil size={16}/></button>
+                                  )}
+                              </div>
+                          ) : (
+                              isAreaManager && (
+                                  <button onClick={async () => {
+                                      const newLink = window.prompt("Inserisci il link di una cartella Drive o Dropbox per questo progetto:");
+                                      if (newLink) { try { await updateDoc(doc(db, 'aree_tematiche', viewingArea.id), { linkDrive: newLink }); showToast("Cartella collegata!"); } catch (e) { console.error(e); } }
+                                  }} className="mt-4 inline-flex items-center px-4 py-2 bg-gray-100 text-gray-600 rounded-xl font-bold text-sm shadow-sm hover:bg-gray-200 transition-colors">
+                                      <LinkIcon className="mr-2" size={16}/> Aggiungi Cartella Condivisa
+                                  </button>
+                              )
+                          )}
+                      </div>
+
+                      {/* MATERIALE E DOCUMENTI */}
+                      <div className="bg-white p-6 rounded-3xl shadow-card border border-gray-100">
+                          <div className="flex justify-between items-center mb-4">
+                              <h4 className="font-bold text-lg text-pcgl-blue flex items-center"><FileText className="mr-2" size={20}/> Materiale</h4>
+                              {isAreaManager && (
+                                  <label className="text-xs bg-blue-50 text-blue-600 px-3 py-2 rounded-lg font-bold uppercase cursor-pointer hover:bg-blue-100 transition-colors">
+                                      <Upload size={14} className="inline mr-1"/> Carica
+                                      <input type="file" className="hidden" onChange={(e) => uploadAreaDoc(e.target.files[0])} />
+                                  </label>
+                              )}
+                          </div>
+                          {uploading && <div className="text-xs text-blue-500 font-bold mb-4 animate-pulse">Caricamento in corso...</div>}
+                          <div className="space-y-2 max-h-60 overflow-y-auto pr-1">
+                              {(viewingArea.documenti || []).map((doc, idx) => (
+                                  <div key={idx} className="flex justify-between items-center bg-gray-50 p-3 rounded-xl border border-gray-100">
+                                      <a href={doc.url} target="_blank" rel="noopener noreferrer" className="flex items-center text-sm font-bold text-pcgl-blue hover:underline truncate">
+                                          <FileText size={16} className="mr-2 flex-shrink-0"/> <span className="truncate">{doc.nome}</span>
+                                      </a>
+                                      {isAreaManager && (
+                                          <button onClick={() => deleteAreaDoc(doc)} className="text-red-500 p-2 hover:bg-red-50 rounded-lg flex-shrink-0"><Trash2 size={16}/></button>
+                                      )}
+                                  </div>
+                              ))}
+                              {(viewingArea.documenti || []).length === 0 && <p className="text-sm text-gray-400 italic">Nessun materiale caricato.</p>}
+                          </div>
+                      </div>
+
+                      {/* BACHECA MESSAGGI */}
+                      <div className="bg-white p-6 rounded-3xl shadow-card border border-gray-100">
+                          <div className="flex justify-between items-center mb-4">
+                              <h4 className="font-bold text-lg text-pcgl-blue flex items-center"><MessageSquare className="mr-2" size={20}/> Bacheca & Avvisi</h4>
+                              {isAreaManager && (
+                                  <button onClick={sendAreaMeetingNotification} className="text-xs bg-red-50 text-red-600 px-3 py-2 rounded-lg font-bold uppercase cursor-pointer hover:bg-red-100 transition-colors flex items-center shadow-sm">
+                                      <Users size={14} className="mr-1"/> Convoca Riunione
+                                  </button>
+                              )}
+                          </div>
+                          
+                          <div className="flex gap-2 mb-4">
+                              <input type="text" placeholder="Scrivi un avviso o messaggio..." className="flex-1 p-3 bg-gray-50 rounded-xl border text-sm" value={newAreaMessage} onChange={e => setNewAreaMessage(e.target.value)} onKeyPress={e => e.key === 'Enter' && sendAreaMessage()} />
+                              <button onClick={sendAreaMessage} className="p-3 bg-pcgl-blue text-white rounded-xl shadow-md"><Send size={18}/></button>
+                          </div>
+
+                          <div className="space-y-3 max-h-80 overflow-y-auto pr-1">
+                              {[...areaMessages].sort((a, b) => (b.inEvidenza ? 1 : 0) - (a.inEvidenza ? 1 : 0)).map(msg => (
+                                  <div key={msg.id} className={`p-3 rounded-xl shadow-sm border ${msg.inEvidenza ? 'bg-yellow-50 border-yellow-200' : (msg.uid === user.uid ? 'bg-blue-50 border-blue-100' : 'bg-white border-gray-100')}`}>
+                                      <div className="flex justify-between items-start mb-1">
+                                          <p className={`text-xs font-bold ${msg.inEvidenza ? 'text-yellow-800' : 'text-gray-600'}`}>
+                                              {msg.inEvidenza && <Pin size={12} className="inline mr-1 fill-yellow-600 text-yellow-600"/>}
+                                              {msg.autore} <span className="font-normal opacity-70">({msg.sede})</span>
+                                          </p>
+                                          <div className="flex gap-2">
+                                              {isAreaManager && (
+                                                  <button onClick={() => togglePinAreaMessage(msg.id, msg.inEvidenza)} className={`text-gray-400 hover:text-yellow-600 ${msg.inEvidenza ? 'text-yellow-600' : ''}`} title="Metti in evidenza"><Pin size={14} className={msg.inEvidenza ? "fill-yellow-600" : ""}/></button>
+                                              )}
+                                              {(isAreaManager || msg.uid === user.uid) && (
+                                                  <button onClick={() => deleteAreaMessage(msg.id)} className="text-red-400 hover:text-red-600" title="Elimina"><X size={14}/></button>
+                                              )}
+                                          </div>
+                                      </div>
+                                      <p className="text-sm text-gray-800 whitespace-pre-wrap">{msg.testo}</p>
+                                      <p className="text-[9px] text-gray-400 text-right mt-1">{new Date(msg.data).toLocaleString()}</p>
+                                  </div>
+                              ))}
+                              {areaMessages.length === 0 && <p className="text-sm text-gray-400 italic">Nessun messaggio in bacheca.</p>}
+                          </div>
+                      </div>
+                  </div>
+              )}
+          </div>
+        );
 
       case 'news_view': return (
         <div className="animate-in slide-in-from-right duration-500 w-full pb-40">
@@ -5347,7 +6620,23 @@ function AppContent() {
                     {/* LISTA CONFERME (SOLO STAFF) */}
                     {selectedNews.importante && ['admin', 'superadmin', 'coordinamento', 'presidente'].includes(userData.ruolo) && (
                         <div className="mt-8 pt-6 border-t border-gray-100">
-                            <h4 className="font-bold text-lg text-pcgl-blue mb-4 flex items-center"><Users size={20} className="mr-2"/> Conferme di Lettura ({readReceipts.length})</h4>
+                            <div className="flex justify-between items-center mb-4">
+                                <h4 className="font-bold text-lg text-pcgl-blue flex items-center"><Users size={20} className="mr-2"/> Conferme di Lettura ({readReceipts.length})</h4>
+                                <button onClick={() => {
+                                    const headers = ["Cognome Nome", "Sede", "Data Conferma"];
+                                    const rows = readReceipts.map(r => [
+                                        `${r.cognome} ${r.nome}`,
+                                        r.sede,
+                                        new Date(r.dataConferma).toLocaleString()
+                                    ]);
+                                    const csvContent = "data:text/csv;charset=utf-8," + [headers.join(","), ...rows.map(e => `"${e.join('","')}"`)].join("\n");
+                                    const link = document.createElement("a");
+                                    link.setAttribute("href", encodeURI(csvContent));
+                                    link.setAttribute("download", `conferme_lettura_${selectedNews.titolo.replace(/[^a-z0-9]/gi, '_')}.csv`);
+                                    document.body.appendChild(link);
+                                    link.click();
+                                }} className="text-xs font-bold text-green-600 uppercase bg-green-50 px-3 py-1 rounded-lg hover:bg-green-100">Esporta CSV</button>
+                            </div>
                             <div className="max-h-60 overflow-y-auto space-y-2 pr-2">
                                 {readReceipts.length > 0 ? readReceipts.map((r, i) => (
                                     <div key={i} className="flex justify-between items-center bg-gray-50 p-3 rounded-lg text-xs border border-gray-100">
@@ -5375,6 +6664,7 @@ function AppContent() {
                         <p className="text-[10px] font-bold text-gray-400 uppercase">{news.data}</p>
                         {news.importante && <span className="text-[10px] font-black text-red-600 uppercase">⚠️ Importante</span>}
                         {news.visibilita === 'riservata' && <span className="text-[9px] font-bold bg-gray-100 text-gray-500 px-2 py-0.5 rounded uppercase ml-2">Riservato</span>}
+                        {news.formId && <span className="text-[9px] font-bold bg-blue-100 text-blue-700 px-2 py-0.5 rounded uppercase ml-2 flex items-center"><ClipboardList size={10} className="mr-1"/> Modulo</span>}
                      </div>
                      <h3 className="font-bold text-base text-pcgl-blue uppercase leading-tight mb-2 line-clamp-2">{news.titolo}</h3>
                      <p className="text-xs text-gray-600 line-clamp-2">{news.testoBreve || news.contenuto}</p>
@@ -5422,6 +6712,25 @@ function AppContent() {
                                         ))}
                                     </div>
                                 )}
+                                {(q.type === 'file' || q.tipo === 'file') && (
+                                    <div>
+                                        {fillingAnswers[q.id] ? (
+                                            <div className="flex items-center justify-between p-3 bg-blue-50 rounded-xl border border-blue-100">
+                                                <a href={fillingAnswers[q.id].url} target="_blank" rel="noopener noreferrer" className="text-sm font-bold text-blue-700 flex items-center truncate hover:underline"><FileText size={16} className="mr-2"/> {fillingAnswers[q.id].name}</a>
+                                                <button onClick={() => { const newAns = {...fillingAnswers}; delete newAns[q.id]; setFillingAnswers(newAns); }} className="text-red-500 p-1 hover:bg-red-50 rounded"><X size={16}/></button>
+                                            </div>
+                                        ) : (
+                                            <label className="flex flex-col items-center justify-center w-full h-32 border-2 border-gray-300 border-dashed rounded-xl cursor-pointer bg-gray-50 hover:bg-gray-100 transition-colors">
+                                                <div className="flex flex-col items-center justify-center pt-5 pb-6">
+                                                    <Upload className="w-8 h-8 mb-3 text-gray-400" />
+                                                    <p className="mb-1 text-sm text-gray-500"><span className="font-bold text-pcgl-blue">Clicca per caricare</span></p>
+                                                    <p className="text-xs text-gray-400">PDF, JPG, PNG (Max 10MB)</p>
+                                                </div>
+                                                <input type="file" className="hidden" onChange={(e) => handleFormFileUpload(e, q.id)} />
+                                            </label>
+                                        )}
+                                    </div>
+                                )}
                                 {q.type === 'date_range' && (
                                     <div className="space-y-2">
                                         <div className="flex gap-2">
@@ -5452,8 +6761,127 @@ function AppContent() {
                         <button onClick={submitCustomForm} className="w-full py-3 bg-pcgl-blue text-white rounded-xl font-bold uppercase shadow-lg mt-4">Invia Risposte</button>
                     </div>
                 </div>
+
+                <div className="border-t border-gray-200 mt-8 pt-6">
+                    <h4 className="font-bold text-lg text-pcgl-blue mb-4">Notifiche di Sistema</h4>
+                    <button onClick={async () => {
+                        if (!window.confirm("Vuoi inviare a tutti gli utenti la notifica push di lancio del nuovo modulo SOGL?")) return;
+                        try {
+                            await addDoc(collection(db, 'news'), {
+                                titolo: 'LANCIO NUOVO MODULO S.O.G.L.',
+                                testo: 'È ora disponibile il nuovo modulo Sala Operativa (SOGL). Tutti gli utenti abilitati possono ora gestire emergenze, logistica, campagne AIB e monitorare la flotta mezzi direttamente dall\'app. Accedi alla sezione Sala Op. per scoprire le novità!',
+                                testoBreve: 'Nuovo modulo Sala Operativa (SOGL) disponibile. Scopri le nuove funzionalità.',
+                                importante: true,
+                                visibilita: 'pubblica',
+                                dataScadenza: new Date(Date.now() + 15 * 24 * 60 * 60 * 1000).toISOString(),
+                                timestamp: serverTimestamp(),
+                                data: new Date().toLocaleDateString('it-IT'),
+                                autore: 'Direzione Generale',
+                                sede: 'TUTTE',
+                                archived: false
+                            });
+                            showToast("Notifica di lancio inviata con successo!");
+                        } catch (e) {
+                            console.error(e);
+                            showToast("Errore invio notifica.", 'error');
+                        }
+                    }} className="w-full py-4 bg-green-600 text-white font-bold text-sm rounded-xl shadow-md hover:bg-green-700 transition-all uppercase">
+                        Invia Notifica Lancio SOGL a tutti
+                    </button>
+                </div>
             </div>
           )}
+        </div>
+      );
+
+      case 'fill_form': return (
+        <div className="animate-in slide-in-from-right duration-500 w-full pb-40">
+            <HeaderSub 
+                title={previewSource === 'editor' ? "Anteprima Modulo" : "Compilazione Modulo"} 
+                onBack={() => { 
+                    setFillingForm(null); 
+                    if (previewSource === 'editor') {
+                        setSubPage('form_manager');
+                        setShowFormEditorModal(true);
+                        setPreviewSource(null);
+                    } else if (previewSource === 'manager_list') {
+                        setSubPage('form_manager');
+                        setPreviewSource(null);
+                    } else { setSubPage(null); }
+                }} />
+            {fillingForm && (
+                <div className="bg-white p-6 rounded-3xl shadow-card border border-gray-100 max-w-2xl mx-auto">
+                    <h3 className="font-black text-xl text-pcgl-blue uppercase mb-2">{fillingForm.title}</h3>
+                    <p className="text-sm text-gray-500 mb-6">{fillingForm.description}</p>
+                    
+                    <div className="space-y-4">
+                        {fillingForm.questions.map(q => (
+                            <div key={q.id} className="bg-gray-50 p-4 rounded-xl border border-gray-200">
+                                <p className="font-bold text-sm text-gray-700 mb-3">{q.text} {q.required && <span className="text-red-500">*</span>}</p>
+                                {q.type === 'boolean' && (
+                                    <div className="flex gap-2">
+                                        <button onClick={() => setFillingAnswers({...fillingAnswers, [q.id]: true})} className={`flex-1 py-3 rounded-xl text-xs font-bold uppercase border transition-all ${fillingAnswers[q.id] === true ? 'bg-green-600 text-white border-green-600 shadow-md' : 'bg-white text-gray-500 border-gray-300'}`}>SÌ</button>
+                                        <button onClick={() => setFillingAnswers({...fillingAnswers, [q.id]: false})} className={`flex-1 py-3 rounded-xl text-xs font-bold uppercase border transition-all ${fillingAnswers[q.id] === false ? 'bg-red-600 text-white border-red-600 shadow-md' : 'bg-white text-gray-500 border-gray-300'}`}>NO</button>
+                                    </div>
+                                )}
+                                {q.type === 'text' && <input type="text" className="w-full p-3 border rounded-xl text-sm" placeholder="Risposta..." onChange={e => setFillingAnswers({...fillingAnswers, [q.id]: e.target.value})} />}
+                                {q.type === 'choice' && <select className="w-full p-3 border rounded-xl text-sm bg-white" onChange={e => setFillingAnswers({...fillingAnswers, [q.id]: e.target.value})} defaultValue=""><option value="" disabled>Seleziona...</option>{q.options.map(o => <option key={o} value={o}>{o}</option>)}</select>}
+                                {q.type === 'checkbox' && (
+                                    <div className="space-y-2">
+                                        {q.options?.map(opt => (
+                                            <label key={opt} className="flex items-center space-x-3 cursor-pointer bg-white p-3 rounded-xl border border-gray-100 hover:bg-gray-50 transition-colors">
+                                                <input type="checkbox" 
+                                                    checked={fillingAnswers[q.id]?.includes(opt) || false}
+                                                    onChange={e => {
+                                                        const current = fillingAnswers[q.id] || [];
+                                                        if (e.target.checked) setFillingAnswers({...fillingAnswers, [q.id]: [...current, opt]});
+                                                        else setFillingAnswers({...fillingAnswers, [q.id]: current.filter(x => x !== opt)});
+                                                    }}
+                                                    className="w-5 h-5 rounded text-pcgl-blue focus:ring-pcgl-blue border-gray-300"
+                                                />
+                                                <span className="text-sm font-medium text-gray-700">{opt}</span>
+                                            </label>
+                                        ))}
+                                    </div>
+                                )}
+                                {(q.type === 'file' || q.tipo === 'file') && (
+                                    <div>
+                                        {fillingAnswers[q.id] ? (
+                                            <div className="flex items-center justify-between p-3 bg-blue-50 rounded-xl border border-blue-100">
+                                                <a href={fillingAnswers[q.id].url} target="_blank" rel="noopener noreferrer" className="text-sm font-bold text-blue-700 flex items-center truncate hover:underline"><FileText size={16} className="mr-2"/> {fillingAnswers[q.id].name}</a>
+                                                <button onClick={() => { const newAns = {...fillingAnswers}; delete newAns[q.id]; setFillingAnswers(newAns); }} className="text-red-500 p-1 hover:bg-red-50 rounded"><X size={16}/></button>
+                                            </div>
+                                        ) : (
+                                            <label className="flex flex-col items-center justify-center w-full h-32 border-2 border-gray-300 border-dashed rounded-xl cursor-pointer bg-gray-50 hover:bg-gray-100 transition-colors">
+                                                <div className="flex flex-col items-center justify-center pt-5 pb-6">
+                                                    <Upload className="w-8 h-8 mb-3 text-gray-400" />
+                                                    <p className="mb-1 text-sm text-gray-500"><span className="font-bold text-pcgl-blue">Clicca per caricare</span></p>
+                                                    <p className="text-xs text-gray-400">PDF, JPG, PNG (Max 10MB)</p>
+                                                </div>
+                                                <input type="file" className="hidden" onChange={(e) => handleFormFileUpload(e, q.id)} />
+                                            </label>
+                                        )}
+                                    </div>
+                                )}
+                                {q.type === 'date_range' && (
+                                    <div className="space-y-2">
+                                        <div className="flex gap-2"><div className="flex-1"><label className="text-[10px] font-bold uppercase text-gray-400 ml-1">Dal</label><input type="date" className="w-full p-3 border rounded-xl text-sm bg-white" min={q.minDate} max={q.maxDate} value={fillingAnswers[q.id]?.start || ''} onChange={e => handleDateRangeChange(q.id, 'start', e.target.value)} /></div><div className="flex-1"><label className="text-[10px] font-bold uppercase text-gray-400 ml-1">Al</label><input type="date" className="w-full p-3 border rounded-xl text-sm bg-white" min={q.minDate} max={q.maxDate} value={fillingAnswers[q.id]?.end || ''} onChange={e => handleDateRangeChange(q.id, 'end', e.target.value)} /></div></div>
+                                        {occupiedSlots.filter(s => s.qId === q.id).length > 0 && <div className="text-xs text-red-500 bg-red-50 p-3 rounded-xl border border-red-100 mt-2"><p className="font-bold mb-1">Date già impegnate:</p><ul className="list-disc pl-4 space-y-1">{occupiedSlots.filter(s => s.qId === q.id).map((s, idx) => <li key={idx}>{new Date(s.start).toLocaleDateString()} - {new Date(s.end).toLocaleDateString()} : Un'altra sede ha selezionato questo periodo</li>)}</ul></div>}
+                                    </div>
+                                )}
+                            </div>
+                        ))}
+                        <button 
+                            onClick={submitCustomForm} 
+                            disabled={previewSource === 'editor' || uploading}
+                            className="w-full py-4 bg-pcgl-blue text-white rounded-xl font-bold uppercase shadow-lg mt-6 active:scale-95 transition-all hover:bg-pcgl-yellow hover:text-pcgl-blue disabled:opacity-50 disabled:cursor-not-allowed flex justify-center items-center"
+                        >
+                            {uploading ? <span className="animate-spin rounded-full h-5 w-5 border-b-2 border-white mr-2"></span> : null}
+                            {uploading ? 'Caricamento in corso...' : (previewSource === 'editor' ? 'Anteprima (Invio disabilitato)' : 'Invia Risposte')}
+                        </button>
+                    </div>
+                </div>
+            )}
         </div>
       );
 
@@ -5475,21 +6903,266 @@ function AppContent() {
         </div>
       );
 
-      case 'corsi_view': return (
+      case 'corsi_view': {
+        const filteredUsers = moodleCourseReport ? moodleCourseReport.users.filter(u => {
+            const sedeMatch = !moodleFilterSede || (u.department || 'N/D') === moodleFilterSede;
+            const typeMatch = moodleUserTypeFilter === 'app' ? u.isAppUser : moodleUserTypeFilter === 'external' ? !u.isAppUser : true;
+            return sedeMatch && typeMatch;
+        }).sort((a, b) => {
+            if (moodleSortBy === 'name') return (a.fullname || '').localeCompare(b.fullname || '');
+            if (moodleSortBy === 'sede') {
+                const sA = a.isAppUser ? (a.department || 'N/D') : (a.appartenenza || a.department || 'N/D');
+                const sB = b.isAppUser ? (b.department || 'N/D') : (b.appartenenza || b.department || 'N/D');
+                return sA.localeCompare(sB) || (a.fullname || '').localeCompare(b.fullname || '');
+            }
+            if (moodleSortBy === 'type') {
+                const tA = a.isAppUser ? 'Interno' : 'Esterno';
+                const tB = b.isAppUser ? 'Interno' : 'Esterno';
+                return tA.localeCompare(tB) || (a.fullname || '').localeCompare(b.fullname || '');
+            }
+            return 0;
+        }) : [];
+
+        const exportMoodleCSV = () => {
+            if (!moodleCourseReport) return;
+            const headers = ["Cognome e Nome", "Email", "Tipo", "Sede/Organizzazione", "Ultimo Accesso"];
+            const rows = filteredUsers.map(u => [
+                u.fullname,
+                u.email,
+                u.isAppUser ? 'Interno' : 'Esterno',
+                u.isAppUser ? (u.department || 'N/D') : (u.appartenenza || u.department || 'N/D'),
+                u.lastcourseaccess ? new Date(u.lastcourseaccess * 1000).toLocaleDateString() : 'Mai Entrato'
+            ]);
+            const csvContent = "data:text/csv;charset=utf-8," + [headers.join(","), ...rows.map(e => `"${e.join('","')}"`)].join("\n");
+            const link = document.createElement("a");
+            link.setAttribute("href", encodeURI(csvContent));
+            link.setAttribute("download", `iscritti_${moodleCourseReport.courseName.replace(/ /g, "_")}.csv`);
+            document.body.appendChild(link);
+            link.click();
+        };
+
+        return (
         <div className="animate-in slide-in-from-right duration-500 w-full pb-40">
           <HeaderSub title="Corsi di Formazione" onBack={() => setSubPage(null)} />
           <div className="space-y-6 font-sans text-pcgl-text-dark">
-            {corsiFormazione.length > 0 ? corsiFormazione.map(corso => (
-                <div key={corso.id} className="bg-white p-6 rounded-2xl shadow-card border border-gray-100">
-                  <h3 className="font-bold text-xl text-pcgl-blue mb-2">{corso.titolo}</h3>
-                  <p className="text-sm text-gray-600 mb-4">{corso.descrizione}</p>
-                  <p className="text-xs text-gray-400 mb-4">Data: {new Date(corso.data).toLocaleDateString()}</p>
-                  <button onClick={() => handleIscrizioneCorso(corso.id)} className="w-full py-3 bg-pcgl-yellow text-pcgl-blue font-bold text-sm rounded-lg shadow-md active:scale-95 transition-all hover:bg-pcgl-blue hover:text-pcgl-yellow">Candidati al Corso</button>
-                </div>
-              )) : <p className="text-center text-gray-500 font-medium">Nessun corso disponibile.</p>}
+            
+            {/* SEZIONE CORSI FIREBASE (INTERNI) */}
+            <div>
+              <h3 className="font-bold text-xl text-pcgl-blue mb-4">Corsi Interni (In Presenza)</h3>
+              {corsiFormazione.length > 0 ? corsiFormazione.map(corso => (
+                  <div key={corso.id} className="bg-white p-6 rounded-2xl shadow-card border border-gray-100 mb-4">
+                    <h3 className="font-bold text-lg text-pcgl-blue mb-2">{corso.titolo}</h3>
+                    <p className="text-sm text-gray-600 mb-4">{corso.descrizione}</p>
+                    <p className="text-xs text-gray-400 mb-4">Data: {new Date(corso.data).toLocaleDateString()}</p>
+                    <button onClick={() => handleIscrizioneCorso(corso.id)} className="w-full py-3 bg-pcgl-yellow text-pcgl-blue font-bold text-sm rounded-lg shadow-md active:scale-95 transition-all hover:bg-pcgl-blue hover:text-pcgl-yellow">Candidati al Corso</button>
+                  </div>
+                )) : <p className="text-gray-500 font-medium">Nessun corso in presenza programmato.</p>}
+            </div>
+
+            {/* SEZIONE CORSI MOODLE */}
+            <div className="pt-6 border-t border-gray-200">
+              <div className="flex justify-between items-center mb-4">
+                <h3 className="font-black text-xl text-pcgl-blue">Corsi E-Learning (Moodle)</h3>
+                <button onClick={() => setShowMoodleGuide(true)} className="px-3 py-2 bg-blue-100 text-blue-700 rounded-lg hover:bg-blue-200 transition-colors font-bold text-xs uppercase flex items-center">
+                    <Info size={16} className="mr-1"/> Guida
+                </button>
+              </div>
+              
+              {!moodleUserFound && moodleStatus === 'success' && (
+                  <div className="mb-6 p-4 bg-orange-50 border border-orange-200 rounded-xl flex items-center justify-between animate-in slide-in-from-top duration-500">
+                      <div className="flex-1 pr-4">
+                          <p className="text-sm font-bold text-orange-800 uppercase">Profilo E-Learning non attivo</p>
+                          <p className="text-xs text-orange-600">Sincronizza il tuo account per accedere ai corsi online.</p>
+                      </div>
+                      <button onClick={handleSyncMoodle} className="px-4 py-2 bg-orange-600 text-white rounded-lg text-xs font-bold uppercase shadow-sm active:scale-95 transition-all">Attiva Ora</button>
+                  </div>
+              )}
+
+              {moodleStatus === 'loading' && <p className="text-gray-500 animate-pulse">Caricamento corsi da Moodle in corso...</p>}
+              
+              {moodleStatus === 'error' && (
+                  <div className="p-4 bg-red-50 border border-red-200 rounded-xl text-red-600 text-sm">
+                      <p className="font-bold">Impossibile caricare i corsi Moodle.</p>
+                      <p className="mt-1">{moodleErrorMsg || "Ciò è probabilmente causato da un blocco di sicurezza (CORS) del browser o da un token non valido. Apri la console per i dettagli (F12)."}</p>
+                      {['admin', 'superadmin'].includes(userData.ruolo) && (
+                          <button onClick={handleSyncMoodle} className="mt-3 w-full py-2 bg-red-600 text-white rounded-lg font-bold uppercase text-xs shadow-sm">
+                              Forza Sincronizzazione Database
+                          </button>
+                      )}
+                  </div>
+              )}
+
+              {moodleStatus === 'success' && moodleCourses.length === 0 && <p className="text-gray-500 font-medium">Nessun corso online disponibile.</p>}
+
+              {moodleStatus === 'success' && moodleCourses.length > 0 && moodleCourses.map(course => {
+                  const isEnrolled = moodleEnrolledCourseIds.includes(course.id);
+                  return (
+                  <div key={course.id} className="bg-white p-6 rounded-2xl shadow-card border border-blue-100 mb-4 relative overflow-hidden">
+                    <div className="absolute top-0 right-0 bg-green-500 text-white text-[10px] font-bold px-3 py-1 rounded-bl-xl uppercase">Attivo</div>
+                    {isEnrolled && <div className="absolute top-0 left-0 bg-pcgl-blue text-pcgl-yellow text-[10px] font-bold px-3 py-1 rounded-br-xl uppercase shadow-md">Iscritto</div>}
+                    
+                    <h4 className="font-bold text-lg text-pcgl-blue mb-1 pr-12 mt-2">{course.fullname}</h4>
+                    <p className="text-xs text-gray-500 mb-3">{course.shortname}</p>
+                    
+                    <div className="flex gap-2">
+                        <button onClick={() => window.open(`https://formazione.pcgl.it/course/view.php?id=${course.id}`, '_blank')} className="flex-[2] py-3 bg-blue-50 text-blue-700 font-bold text-sm rounded-lg shadow-sm active:scale-95 transition-all hover:bg-blue-100">
+                            {isEnrolled ? "Riprendi Corso" : "Vai al Corso"}
+                        </button>
+                        {['admin', 'superadmin', 'coordinamento'].includes(userData.ruolo) && (
+                            <button onClick={() => handleMoodleCourseReport(course)} disabled={loadingMoodleReport} className="flex-[1] py-3 bg-pcgl-yellow text-pcgl-blue font-bold text-xs uppercase rounded-lg shadow-sm active:scale-95 transition-all hover:bg-yellow-500 disabled:opacity-50 flex items-center justify-center">
+                                <Users size={16} className="mr-1"/> Iscritti
+                            </button>
+                        )}
+                    </div>
+                  </div>
+              )})}
+            </div>
+
           </div>
+          
+          {/* MODALE REPORT ISCRITTI MOODLE */}
+          {moodleCourseReport && (
+            <React.Fragment>
+            <div className="fixed inset-0 bg-black/80 z-[1700] flex items-center justify-center p-4 animate-in fade-in print:hidden" onClick={() => { setMoodleCourseReport(null); setMoodleFilterSede(''); setMoodleUserTypeFilter(''); setMoodleSortBy('name'); setShowMoodleMail(false); }}>
+                <div className="bg-white w-full max-w-4xl rounded-3xl p-6 shadow-2xl max-h-[90vh] flex flex-col" onClick={e => e.stopPropagation()}>
+                    <div className="flex justify-between items-start mb-4 border-b border-gray-100 pb-4">
+                        <div>
+                            <h3 className="font-black text-xl text-pcgl-blue uppercase truncate pr-4">Iscritti: {moodleCourseReport.courseName}</h3>
+                            <p className="text-xs font-bold text-gray-500 mt-1">
+                                Totale: <span className="text-pcgl-blue">{moodleCourseReport.users.length}</span> | Interni: <span className="text-green-600">{moodleCourseReport.users.filter(u => u.isAppUser).length}</span> | Esterni: <span className="text-purple-600">{moodleCourseReport.users.filter(u => !u.isAppUser).length}</span>
+                            </p>
+                        </div>
+                        <button onClick={() => { setMoodleCourseReport(null); setMoodleFilterSede(''); setMoodleUserTypeFilter(''); setMoodleSortBy('name'); setShowMoodleMail(false); }} className="text-gray-400 hover:text-gray-600 bg-gray-100 p-2 rounded-full"><X size={20}/></button>
+                    </div>
+                    
+                    <div className="flex flex-col lg:flex-row gap-4 mb-6">
+                        <div className="flex-1 grid grid-cols-1 sm:grid-cols-3 gap-2">
+                            <select className="w-full p-3 bg-gray-50 rounded-xl border border-gray-200 font-bold text-sm uppercase" value={moodleFilterSede} onChange={e => setMoodleFilterSede(e.target.value)}>
+                                <option value="">Tutte le Sedi</option>
+                                {sediDisponibili.map(s => <option key={s} value={s}>{s}</option>)}
+                            </select>
+                            <select className="w-full p-3 bg-gray-50 rounded-xl border border-gray-200 font-bold text-sm uppercase" value={moodleUserTypeFilter} onChange={e => setMoodleUserTypeFilter(e.target.value)}>
+                                <option value="">Tutti gli Utenti</option>
+                                <option value="app">Solo Utenti App</option>
+                                <option value="external">Solo Utenti Esterni</option>
+                            </select>
+                            <select className="w-full p-3 bg-gray-50 rounded-xl border border-gray-200 font-bold text-sm uppercase" value={moodleSortBy} onChange={e => setMoodleSortBy(e.target.value)}>
+                                <option value="name">Ordina per Nome</option>
+                                <option value="sede">Ordina per Sede</option>
+                                <option value="type">Ordina per Tipo</option>
+                            </select>
+                        </div>
+                        <div className="flex flex-wrap gap-2">
+                            <button onClick={() => setShowMoodleMail(!showMoodleMail)} className={`flex-1 min-w-[120px] px-4 py-3 ${showMoodleMail ? 'bg-gray-200 text-gray-600' : 'bg-pcgl-yellow text-pcgl-blue'} rounded-xl font-bold uppercase shadow-md flex items-center justify-center`}>
+                                <Mail className="mr-2" size={18}/> {showMoodleMail ? 'Annulla' : 'Invia Email'}
+                            </button>
+                            <button onClick={exportMoodleCSV} className="flex-1 min-w-[120px] px-4 py-3 bg-green-600 text-white rounded-xl font-bold uppercase shadow-md flex items-center justify-center">
+                                <FileSpreadsheet className="mr-2" size={18}/> Esporta CSV
+                            </button>
+                            <button onClick={() => window.print()} className="flex-1 min-w-[120px] px-4 py-3 bg-pcgl-blue text-white rounded-xl font-bold uppercase shadow-md flex items-center justify-center">
+                                <Printer className="mr-2" size={18}/> Stampa PDF
+                            </button>
+                        </div>
+                    </div>
+
+                    {showMoodleMail && (
+                        <div className="mb-4 bg-yellow-50 p-4 rounded-xl border border-yellow-200 animate-in fade-in">
+                            <h4 className="font-bold text-sm text-pcgl-blue mb-2 uppercase">Invia Email agli Iscritti</h4>
+                            <input className="w-full p-3 mb-2 bg-white rounded-xl border border-yellow-100 text-sm" placeholder="Oggetto" value={moodleMailSubject} onChange={e => setMoodleMailSubject(e.target.value)} />
+                            <textarea className="w-full p-3 mb-2 bg-white rounded-xl border border-yellow-100 text-sm h-24 resize-none" placeholder="Messaggio..." value={moodleMailBody} onChange={e => setMoodleMailBody(e.target.value)} />
+                            <div className="flex justify-end gap-2">
+                                <button onClick={() => setShowMoodleMail(false)} className="px-4 py-2 bg-gray-200 text-gray-600 rounded-lg text-xs font-bold uppercase hover:bg-gray-300 transition-colors">Annulla</button>
+                                <button onClick={sendMoodleCommunication} className="px-4 py-2 bg-pcgl-blue text-white rounded-lg text-xs font-bold uppercase shadow-md hover:bg-blue-800 transition-colors">Invia ({moodleCourseReport.users.filter(u => !moodleFilterSede || (u.department || 'N/D') === moodleFilterSede).filter(u => u.email).length})</button>
+                            </div>
+                        </div>
+                    )}
+
+                    <div className="flex-1 overflow-y-auto space-y-3 pr-2">
+                        {filteredUsers.length > 0 ? 
+                            filteredUsers.map(u => (
+                            <div key={u.id} className="flex justify-between items-center bg-gray-50 p-4 rounded-xl border border-gray-100">
+                                <div>
+                                    <p className="font-bold text-sm text-pcgl-blue uppercase flex items-center">
+                                        {u.fullname}
+                                        {!u.isAppUser && <span className="ml-2 text-[9px] font-bold bg-purple-100 text-purple-700 px-2 py-0.5 rounded-full uppercase">Esterno</span>}
+                                    </p>
+                                    <p className="text-xs text-gray-500">{u.email} <span className="font-bold text-gray-400 ml-1">• {!u.isAppUser && u.appartenenza ? u.appartenenza : (u.department || 'N/D')}</span></p>
+                                </div>
+                                <div className="text-right">
+                                    <p className="text-[10px] text-gray-400 uppercase font-bold">Ultimo accesso</p>
+                                    <p className={`text-xs font-mono font-bold ${u.lastcourseaccess ? 'text-green-600' : 'text-orange-500'}`}>
+                                        {u.lastcourseaccess ? new Date(u.lastcourseaccess * 1000).toLocaleDateString() : 'Mai Entrato'}
+                                    </p>
+                                </div>
+                            </div>
+                        )) : <p className="text-center text-gray-500 text-sm italic py-4">Nessun utente iscritto a questo corso per la sede selezionata.</p>}
+                    </div>
+                    <button onClick={() => { setMoodleCourseReport(null); setMoodleFilterSede(''); setMoodleUserTypeFilter(''); setMoodleSortBy('name'); setShowMoodleMail(false); }} className="w-full mt-4 py-3 bg-gray-200 text-gray-600 rounded-xl font-bold uppercase hover:bg-gray-300 transition-colors">Chiudi Report</button>
+                </div>
+            </div>
+          
+          {/* PRINT LAYOUT FOR MOODLE REPORT */}
+            <div className="hidden print:block w-full bg-white p-8 text-black font-sans">
+                <div className="flex items-center justify-between border-b-4 border-[#001a33] pb-6 mb-8">
+                    <div>
+                        <h1 className="text-3xl font-black uppercase text-[#001a33] leading-none">Report Iscritti Corso</h1>
+                        <p className="text-xl font-bold text-gray-500 mt-2">{moodleCourseReport.courseName}</p>
+                        <p className="text-sm font-bold text-gray-500 uppercase tracking-[0.2em] mt-2">Protezione Civile Gruppo Lucano</p>
+                    </div>
+                    <img src={APP_LOGO} className="w-24 h-24 object-contain" alt="Logo PCGL" />
+                </div>
+                <div className="mb-6 bg-gray-50 p-4 rounded-xl border border-gray-200 print:bg-white print:border-0 print:p-0">
+                    <p className="font-bold uppercase text-gray-600">Filtro Sede: <span className="text-pcgl-blue">{moodleFilterSede || 'Tutte le Sedi'}</span> | Tipo: <span className="text-pcgl-blue">{moodleUserTypeFilter === 'app' ? 'Solo App' : moodleUserTypeFilter === 'external' ? 'Solo Esterni' : 'Tutti'}</span></p>
+                    <p className="text-sm text-gray-500 mt-1">Generato il {new Date().toLocaleString()} - Totale Iscritti Mostrati: <b>{filteredUsers.length}</b></p>
+                </div>
+                <table className="w-full text-left text-sm border-collapse">
+                    <thead>
+                        <tr className="bg-gray-100 border-b-2 border-gray-300">
+                            <th className="p-3 font-bold text-gray-600 uppercase text-xs">Cognome Nome</th>
+                            <th className="p-3 font-bold text-gray-600 uppercase text-xs">Email</th>
+                            <th className="p-3 font-bold text-gray-600 uppercase text-xs">Tipo</th>
+                            <th className="p-3 font-bold text-gray-600 uppercase text-xs">Sede/Org.</th>
+                            <th className="p-3 font-bold text-gray-600 uppercase text-xs">Ultimo Accesso</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {filteredUsers.map((u, i) => (
+                            <tr key={i} className="border-b border-gray-200">
+                                <td className="p-3 uppercase font-bold">{u.fullname}</td>
+                                <td className="p-3 text-xs text-gray-500">{u.email}</td>
+                                <td className="p-3 text-xs font-bold uppercase">{u.isAppUser ? <span className="text-green-600">Interno</span> : <span className="text-purple-600">Esterno</span>}</td>
+                                <td className="p-3 uppercase font-medium">{u.isAppUser ? (u.department || 'N/D') : (u.appartenenza || u.department || 'N/D')}</td>
+                                <td className="p-3 text-xs font-mono">{u.lastcourseaccess ? new Date(u.lastcourseaccess * 1000).toLocaleDateString() : 'Mai Entrato'}</td>
+                            </tr>
+                        ))}
+                    </tbody>
+                </table>
+            </div>
+            </React.Fragment>
+          )}
+
+          {/* MODALE GUIDA MOODLE */}
+          {showMoodleGuide && (
+            <div className="fixed inset-0 z-[2000] bg-black/80 flex items-center justify-center p-6 animate-in fade-in" onClick={() => setShowMoodleGuide(false)}>
+                <div className="bg-white p-8 rounded-3xl shadow-2xl max-w-sm text-center relative" onClick={e => e.stopPropagation()}>
+                    <button onClick={() => setShowMoodleGuide(false)} className="absolute top-4 right-4 text-gray-400 hover:text-gray-600"><X size={24}/></button>
+                    <BookOpen size={48} className="text-pcgl-blue mx-auto mb-4"/>
+                    <h3 className="text-xl font-black text-pcgl-blue uppercase mb-2">Come accedere a Moodle?</h3>
+                    <div className="text-sm text-gray-500 mb-6 space-y-3">
+                        <p>Per accedere alla piattaforma di formazione E-Learning (Moodle) devi utilizzare le tue credenziali personali.</p>
+                        <div className="bg-blue-50 p-4 rounded-xl border border-blue-100 text-left">
+                            <p className="font-bold text-pcgl-blue mb-1">Dove trovo la Password?</p>
+                            <p>Puoi trovare la tua password predefinita andando nella sezione <strong>Il Mio Profilo</strong> (cliccando in basso sull'icona dell'utente) e scorrendo fino alla scheda "Accesso E-Learning".</p>
+                        </div>
+                        <p>La username corrisponde alla tua email istituzionale.</p>
+                    </div>
+                    <button onClick={() => { setShowMoodleGuide(false); setSubPage('fascicolo_edit'); }} className="w-full py-3 bg-pcgl-blue text-white rounded-xl font-bold uppercase shadow-lg hover:bg-pcgl-yellow hover:text-pcgl-blue transition-colors">Vai al Mio Profilo</button>
+                </div>
+            </div>
+          )}
         </div>
       );
+      }
 
       case 'news_gest': return (
         <div className="animate-in slide-in-from-right duration-500 w-full pb-40">
@@ -5558,6 +7231,12 @@ function AppContent() {
                </div>
                <span className={`text-sm font-bold uppercase select-none ${newNewsImportant ? 'text-red-600' : 'text-gray-600'}`}>Contrassegna come Importante / Allerta</span>
             </div>
+            <div className="flex items-center space-x-3 p-2 cursor-pointer" onClick={() => setNewNewsTelegram(!newNewsTelegram)}>
+               <div className={`w-6 h-6 rounded border-2 flex items-center justify-center transition-all ${newNewsTelegram ? 'bg-blue-500 border-blue-500' : 'border-gray-300'}`}>
+                  {newNewsTelegram && <Check size={14} className="text-white" />}
+               </div>
+               <span className={`text-sm font-bold uppercase select-none ${newNewsTelegram ? 'text-blue-500' : 'text-gray-600'}`}>Invia notifica tramite Bot Telegram</span>
+            </div>
             {error && <p className="text-red-500 text-sm">{error}</p>}
             <div className="flex gap-2">
                 {editingNewsId && <button onClick={resetNewsForm} className="flex-1 py-4 bg-gray-200 text-gray-600 font-bold text-lg rounded-xl shadow-sm active:scale-95 transition-all">Annulla</button>}
@@ -5575,8 +7254,12 @@ function AppContent() {
                       <p className={`font-bold text-base ${news.importante ? 'text-red-700' : 'text-pcgl-blue'}`}>{news.importante && "⚠️ "}{news.titolo}</p>
                       <p className="text-xs text-gray-500">Data: {news.data}</p>
                       {news.visibilita === 'riservata' && <span className="text-[9px] font-bold bg-gray-100 text-gray-500 px-2 py-0.5 rounded uppercase mt-1 inline-block">Riservata</span>}
+                      {news.formId && <span className="text-[9px] font-bold bg-blue-100 text-blue-700 px-2 py-0.5 rounded uppercase mt-1 ml-2 inline-block">Modulo Dati</span>}
                   </div>
                   <div className="flex gap-1">
+                      {['admin', 'superadmin', 'coordinamento'].includes(userData.ruolo) && (news.visibilita === 'pubblica' || (news.visibilita === 'riservata' && (!news.targetRuolo || news.targetRuolo === 'tutti') && (!news.targetSede || news.targetSede === 'tutte'))) && (
+                          <button onClick={() => shareNewsToTelegram(news)} className="p-2 bg-green-50 text-green-600 rounded-lg hover:bg-green-100 transition-colors" title="Condividi su Telegram"><Send size={20}/></button>
+                      )}
                       <button onClick={() => handleEditNews(news)} className="p-2 bg-blue-50 text-blue-600 rounded-lg hover:bg-blue-100 transition-colors"><Pencil size={20}/></button>
                       <button onClick={() => deleteNews(news.id)} className="p-2 bg-red-100 text-red-600 rounded-lg hover:bg-red-200 transition-colors"><Trash2 size={20}/></button>
                   </div>
@@ -5616,7 +7299,7 @@ function AppContent() {
           </div>
           <h3 className="font-bold text-xl text-pcgl-blue mb-4">Risorse della Sede ({userData?.sede})</h3>
           <div className="space-y-4 font-sans text-pcgl-text-dark">
-            {risorseSede.length > 0 ? risorseSede.map(resource => (
+            {risorseSede.filter(r => r.sede === userData.sede).length > 0 ? risorseSede.filter(r => r.sede === userData.sede).map(resource => (
                 <div key={resource.id} className="bg-white p-4 rounded-lg shadow-card border border-gray-100 flex justify-between items-center">
                   <div><p className="font-bold text-base text-pcgl-blue">{resource.nome} ({resource.tipo})</p><p className="text-sm text-gray-500">Quantità: {resource.quantita}</p></div>
                   <button onClick={() => deleteResource(resource.id)} className="p-2 bg-red-100 text-red-600 rounded-lg hover:bg-red-200 transition-colors"><Trash2 size={20}/></button>
@@ -5683,16 +7366,16 @@ function AppContent() {
           )}
 
           {/* Aggiunta Mezzo (Presidente, Admin, Superadmin, Coordinamento) */}
-          {['presidente', 'admin', 'superadmin', 'coordinamento'].includes(userData.ruolo) && (
+          {['presidente', 'admin', 'superadmin', 'coordinamento'].includes(userData.ruolo) && (!filterSede || filterSede === userData.sede || ['admin', 'superadmin', 'coordinamento'].includes(userData.ruolo)) && (
             <div className="mb-8">
               <button onClick={() => {
-                  if(!showAddVehicle) setVehicleForm({ id: null, tipo: '', tipologia: '', targa: '', scadenzaAssicurazione: '', scadenzaRevisione: '', kmAttuali: '', sede: userData.sede });
+                  if(!showAddVehicle) setVehicleForm({ id: null, tipo: '', tipologia: '', targa: '', scadenzaAssicurazione: '', scadenzaRevisione: '', kmAttuali: '', sede: (userData.originalRuolo === 'superadmin' && userData.ruolo !== 'superadmin') ? 'SEDE TEST FITTIZIA' : userData.sede });
                   setShowAddVehicle(!showAddVehicle);
               }} className="w-full py-4 bg-pcgl-blue text-pcgl-yellow rounded-xl font-bold uppercase shadow-md mb-4">{showAddVehicle ? 'Annulla' : 'Aggiungi Nuovo Mezzo'}</button>
               {showAddVehicle && (
                 <div className="bg-white p-6 rounded-2xl shadow-card border border-gray-100 space-y-4 animate-in slide-in-from-top duration-300">
                   {['admin', 'superadmin', 'coordinamento'].includes(userData.ruolo) && (
-                      <select className="w-full p-3 bg-gray-50 rounded-lg border" value={vehicleForm.sede} onChange={e => setVehicleForm({...vehicleForm, sede: e.target.value})}>
+                      <select className="w-full p-3 bg-gray-50 rounded-lg border" value={vehicleForm.sede} onChange={e => setVehicleForm({...vehicleForm, sede: e.target.value})} disabled={userData.originalRuolo === 'superadmin' && userData.ruolo !== 'superadmin'}>
                           <option value="">Seleziona Sede</option>
                           {sediDisponibili.map(s => <option key={s} value={s}>{s}</option>)}
                       </select>
@@ -5767,7 +7450,7 @@ function AppContent() {
                     isMyMovement ? (
                         <button onClick={() => { 
                             setSelectedVehicle(m); 
-                            setMovementForm({ mode: 'rientro', km: '', motivazione: '', note: '', spese: [], newSpesaTipo: 'carburante', newSpesaImporto: '' }); 
+                            setMovementForm({ mode: 'rientro', km: '', motivazione: '', note: '', spese: [], newSpesaTipo: 'carburante', newSpesaImporto: '', checklist: {} }); 
                             setShowMovementModal(true); 
                         }} className="w-full mt-4 py-3 bg-green-600 text-white rounded-xl font-bold uppercase shadow-sm flex items-center justify-center hover:bg-green-700 transition-colors animate-pulse">
                             <CheckCircle className="mr-2" size={20}/> Chiudi Foglio Marcia
@@ -5780,7 +7463,7 @@ function AppContent() {
                 ) : (
                     <button onClick={() => { 
                         setSelectedVehicle(m); 
-                        setMovementForm({ mode: 'uscita', km: m.kmAttuali || '', motivazione: '', note: '', spese: [], newSpesaTipo: 'carburante', newSpesaImporto: '' }); 
+                        setMovementForm({ mode: 'uscita', km: m.kmAttuali || '', motivazione: '', note: '', spese: [], newSpesaTipo: 'carburante', newSpesaImporto: '', checklist: { carrozzeria: false, pneumatici: false, attrezzatura_dpi: false, livelli_carburante: false } }); 
                         setShowMovementModal(true); 
                     }} className="w-full mt-4 py-3 bg-pcgl-blue text-white rounded-xl font-bold uppercase shadow-sm flex items-center justify-center hover:bg-pcgl-yellow hover:text-pcgl-blue transition-colors">
                         <Truck className="mr-2" size={20}/> Apri Foglio Marcia
@@ -5810,6 +7493,18 @@ function AppContent() {
                         <div>
                             <label className="text-xs font-bold uppercase text-gray-400">Motivazione / Destinazione</label>
                             <input type="text" className="w-full p-3 bg-gray-50 rounded-xl border" value={movementForm.motivazione} onChange={e => setMovementForm({...movementForm, motivazione: e.target.value})} placeholder="Es. Servizio AIB, Trasferimento..." />
+                        </div>
+
+                        <div className="border-t pt-4 mt-4">
+                            <label className="text-xs font-bold uppercase text-gray-400 mb-2 block flex items-center"><CheckCircle size={14} className="mr-1"/> Checklist Pre-Partenza</label>
+                            <div className="space-y-2">
+                                {Object.keys(movementForm.checklist).map(key => (
+                                    <label key={key} className="flex items-center space-x-2 bg-gray-50 p-2 rounded-lg border border-gray-100 cursor-pointer hover:bg-gray-100 transition-colors">
+                                        <input type="checkbox" checked={movementForm.checklist[key]} onChange={e => setMovementForm({...movementForm, checklist: {...movementForm.checklist, [key]: e.target.checked}})} className="rounded text-pcgl-blue focus:ring-pcgl-blue w-4 h-4" />
+                                        <span className="text-xs font-bold text-gray-600 uppercase">{key.replace('_', ' ')} controllati</span>
+                                    </label>
+                                ))}
+                            </div>
                         </div>
                       </>
                   ) : (
@@ -5864,6 +7559,26 @@ function AppContent() {
                                 <p className="text-[10px] text-gray-500">{new Date().toLocaleString()}</p>
                             </div>
                         </div>
+
+            {/* CLASSIFICA E RICONOSCIMENTI (GAMIFICATION) */}
+            <div className="bg-white p-6 rounded-3xl shadow-card border border-gray-100 mt-8">
+                <h4 className="font-bold text-xl text-pcgl-blue mb-4 flex items-center"><Award className="mr-2 text-pcgl-yellow"/> Top 10 Volontari (Gamification)</h4>
+                <p className="text-sm text-gray-500 mb-4">Punteggio operativo calcolato in base alla formazione completata (10pt) e alle squadre d'appartenenza (50pt).</p>
+                
+                <div className="space-y-3">
+                    {leaderboard.map((u, i) => (
+                        <div key={u.id} className="flex justify-between items-center bg-gray-50 p-3 rounded-xl border border-gray-100">
+                            <div className="flex items-center gap-3">
+                                <div className={`w-8 h-8 rounded-full flex items-center justify-center font-bold text-white shadow-md ${i === 0 ? 'bg-yellow-500' : i === 1 ? 'bg-gray-400' : i === 2 ? 'bg-orange-700' : 'bg-pcgl-blue'}`}>{i + 1}</div>
+                                <div><p className="font-bold text-sm uppercase text-pcgl-blue">{u.nome} {u.cognome}</p><p className="text-[10px] text-gray-500 uppercase">{u.sede}</p></div>
+                            </div>
+                            <div className="text-right">
+                                <span className="font-black text-lg text-pcgl-blue">{u.punti}</span><span className="text-[10px] text-gray-400 font-bold uppercase block -mt-1">Punti</span>
+                            </div>
+                        </div>
+                    ))}
+                </div>
+            </div>
                       </>
                   )}
                   
@@ -6082,6 +7797,12 @@ function AppContent() {
             </div>
             <p className="text-center text-[10px] text-gray-400 font-bold uppercase mt-8">Fonte: Dati Protezione Civile Regionale</p>
             
+            {['admin', 'superadmin', 'coordinamento'].includes(userData.ruolo) && (
+                <button onClick={shareMeteoToTelegram} className="mt-4 w-full py-3 bg-[#0088cc] text-white rounded-xl font-bold uppercase shadow-md active:scale-95 transition-all flex items-center justify-center hover:bg-[#0077b3]">
+                    <Send size={20} className="mr-2"/> Condividi su Telegram
+                </button>
+            )}
+            
             {/* LISTA ALLERTE ATTIVE */}
             <div className="mt-8">
               <h3 className="font-black text-xl text-[#001a33] mb-4 uppercase">Allerte Attive</h3>
@@ -6177,7 +7898,7 @@ function AppContent() {
              <div className="mb-4"><select className="w-full p-3 bg-white rounded-xl border border-gray-200 font-bold text-sm" value={filterSede} onChange={e => setFilterSede(e.target.value)}><option value="">Tutte le Sedi</option>{sediDisponibili.map(s => <option key={s} value={s}>{s}</option>)}</select></div>
           )}
 
-          {['presidente', 'coordinamento', 'admin', 'superadmin'].includes(userData.ruolo) && (
+          {['presidente', 'coordinamento', 'admin', 'superadmin'].includes(userData.ruolo) && (!filterSede || filterSede === userData.sede || ['admin', 'superadmin', 'coordinamento'].includes(userData.ruolo)) && (
              <button onClick={() => setSubPage('documenti_gest')} className="w-full mb-6 py-4 bg-white text-pcgl-blue border-2 border-pcgl-blue rounded-2xl font-bold uppercase shadow-sm flex items-center justify-center active:scale-95 transition-all hover:bg-blue-50"><FileText className="mr-2" size={20}/> Gestisci Documenti</button>
           )}
           <div className="space-y-4 font-sans text-pcgl-text-dark">
@@ -6288,6 +8009,44 @@ function AppContent() {
                 </div>
               )) : <p className="text-center text-gray-500 font-medium">Nessun documento trovato.</p>}
           </div>
+        </div>
+      );
+
+      case 'telegram_uploads_view': return (
+        <div className="animate-in slide-in-from-right duration-500 w-full pb-40">
+            <HeaderSub title="Ricezioni Telegram" onBack={() => setSubPage('sala_operativa')} />
+            <div className="space-y-4">
+                {telegramUploads.map(upload => (
+                    <div key={upload.id} className="bg-white p-6 rounded-2xl shadow-card border border-gray-100 flex flex-col md:flex-row gap-4 items-start">
+                        {upload.type === 'photo' ? (
+                            <img src={upload.url} alt="Upload" className="w-full md:w-32 h-32 object-cover rounded-xl cursor-pointer" onClick={() => window.open(upload.url, '_blank')} />
+                        ) : (
+                            <div className="w-full md:w-32 h-32 bg-gray-100 rounded-xl flex items-center justify-center cursor-pointer" onClick={() => window.open(upload.url, '_blank')}>
+                                <FileText size={48} className="text-pcgl-blue"/>
+                            </div>
+                        )}
+                        <div className="flex-1 w-full">
+                            <div className="flex justify-between items-start">
+                                <div>
+                                    <h4 className="font-black text-lg text-pcgl-blue uppercase">{upload.userName}</h4>
+                                    <p className="text-xs font-bold text-gray-500 uppercase">{upload.userSede} • {new Date(upload.timestamp).toLocaleString()}</p>
+                                </div>
+                                <button onClick={async () => {
+                                    if (window.confirm("Eliminare questo file?")) {
+                                        await deleteDoc(doc(db, 'telegram_uploads', upload.id));
+                                        showToast("File eliminato.");
+                                    }
+                                }} className="p-2 bg-red-100 text-red-600 rounded-lg hover:bg-red-200 transition-colors">
+                                    <Trash2 size={20}/>
+                                </button>
+                            </div>
+                            <p className="mt-3 text-sm text-gray-700 bg-gray-50 p-3 rounded-xl border border-gray-100 italic">{upload.caption || "Nessuna descrizione fornita."}</p>
+                            <a href={upload.url} target="_blank" rel="noopener noreferrer" className="mt-2 inline-block text-xs font-bold text-pcgl-blue uppercase hover:underline">Apri File Originale</a>
+                        </div>
+                    </div>
+                ))}
+                {telegramUploads.length === 0 && <p className="text-center text-gray-500 font-medium py-8">Nessun file ricevuto da Telegram.</p>}
+            </div>
         </div>
       );
 
@@ -6571,7 +8330,14 @@ function AppContent() {
                                             <p className="text-xs text-gray-500">{slot.oraInizio} - {slot.oraFine}</p>
                                             <p className={`text-[10px] font-bold uppercase ${available === 0 ? 'text-red-500' : 'text-green-600'}`}>{available} Posti liberi</p>
                                         </div>
-                                        {isBooked ? <span className="bg-green-100 text-green-700 px-3 py-1 rounded-lg text-xs font-bold uppercase">Prenotato</span> : 
+                                        {isBooked ? (
+                                            <div className="flex flex-col gap-1 items-end">
+                                                <span className="bg-green-100 text-green-700 px-3 py-1 rounded-lg text-xs font-bold uppercase">Prenotato</span>
+                                                <a href={generateGoogleCalendarLink(event, slot)} target="_blank" rel="noopener noreferrer" className="text-[9px] text-blue-600 font-bold uppercase hover:underline">
+                                                    📅 Aggiungi a Calendar
+                                                </a>
+                                            </div>
+                                        ) : 
                                          <button onClick={() => bookShiftSlot(event.id, idx)} disabled={isFull} className={`px-4 py-2 rounded-lg text-xs font-bold uppercase shadow-sm ${isFull ? 'bg-gray-300 text-gray-500 cursor-not-allowed' : 'bg-pcgl-blue text-white'}`}>{isFull ? 'Completo' : 'Prenota'}</button>}
                                     </div>
                                 );
@@ -6594,8 +8360,8 @@ function AppContent() {
               <h3 className="font-bold text-lg text-pcgl-blue mb-4 uppercase">Ricerca Manuale</h3>
               <div className="flex gap-2">
                 <input type="text" placeholder="N. Tessera o Codice Fiscale" className="flex-1 p-4 bg-gray-50 rounded-xl font-bold text-sm border border-gray-200 uppercase focus:border-pcgl-yellow transition-all" value={verifySearch} onChange={e => setVerifySearch(e.target.value)} onKeyPress={e => e.key === 'Enter' && handleVerificationSearch()} />
-                <button onClick={handleVerificationSearch} className="p-4 bg-pcgl-blue text-white rounded-xl shadow-md active:scale-95 transition-all"><Search size={24}/></button>
-                <button onClick={() => { setScannerMode('verify'); setShowScanner(true); }} className="p-4 bg-pcgl-yellow text-pcgl-blue rounded-xl shadow-md active:scale-95 transition-all"><QrCode size={24}/></button>
+                <button onClick={handleVerificationSearch} className="p-4 bg-pcgl-blue text-white rounded-xl shadow-md active:scale-95 transition-all shrink-0"><Search size={24}/></button>
+                <button onClick={() => handleOpenScanner('verify')} className="p-4 bg-pcgl-yellow text-pcgl-blue rounded-xl shadow-md active:scale-95 transition-all shrink-0"><QrCode size={24}/></button>
               </div>
               <div className="mt-4 text-center">
                   <a href="https://pcgl.it/verifica.html" target="_blank" rel="noopener noreferrer" className="text-xs font-bold text-gray-400 uppercase hover:text-pcgl-blue underline flex items-center justify-center">
@@ -6689,7 +8455,7 @@ function AppContent() {
                         {modulesList.map(m => <option key={m.id} value={m.nome}>{m.nome}</option>)}
                     </select>
                     <input type="text" placeholder="Nome Nuova Squadra" className="flex-1 p-4 bg-gray-50 rounded-2xl font-bold text-sm border border-gray-200" value={newTeamName} onChange={e => setNewTeamName(e.target.value)} />
-                    <button onClick={() => { setScannerMode('checkin'); setShowScanner(true); }} className="p-4 bg-pcgl-blue text-white rounded-2xl shadow-md active:scale-95 transition-all"><QrCode size={24}/></button>
+                    <button onClick={() => handleOpenScanner('checkin')} className="p-4 bg-pcgl-blue text-white rounded-2xl shadow-md active:scale-95 transition-all"><QrCode size={24}/></button>
                 </div>
 
                 <div className="space-y-6">
@@ -6734,8 +8500,7 @@ function AppContent() {
           </div>
         );
 
-      case 'report_view': return (
-        (() => {
+      case 'report_view': {
         const viewedPending = reportData?.participations.filter(p => p.status === 'pending' && p.viewedAt) || [];
         const responded = reportData?.participations.filter(p => p.status !== 'pending') || [];
         const isStaff = ['admin', 'superadmin', 'coordinamento'].includes(userData.ruolo);
@@ -6776,7 +8541,8 @@ function AppContent() {
             </table>
         );
 
-        <div className="animate-in slide-in-from-right duration-500 w-full pb-40">
+        return (
+        <div className="animate-in slide-in-from-right duration-500 w-full pb-40 print:pb-0">
             <HeaderSub title="Report Evento" onBack={() => setSubPage('allerta_gest')} />
             {reportData && (
                 <div className="bg-white p-8 rounded-[2.5rem] shadow-card border border-gray-100 print:shadow-none print:border-none print:p-0">
@@ -6799,7 +8565,7 @@ function AppContent() {
                         ) : renderTable(responded, false)}
 
                         {viewedPending.length > 0 && (
-                            <>
+                            <React.Fragment>
                                 <h3 className="font-black text-lg uppercase text-orange-500 mt-8">Visualizzato (In Attesa) ({viewedPending.length})</h3>
                                 {isStaff ? (
                                     Object.entries(groupBySede(viewedPending)).map(([sede, list]) => (
@@ -6809,21 +8575,21 @@ function AppContent() {
                                         </div>
                                     ))
                                 ) : renderTable(viewedPending, false)}
-                            </>
+                            </React.Fragment>
                         )}
                     </div>
                     <button onClick={() => window.print()} className="mt-8 w-full py-4 bg-pcgl-blue text-white rounded-xl font-bold uppercase shadow-lg print:hidden">Stampa Report PDF</button>
                 </div>
             )}
         </div>
-        })()
-      );
+        );
+      }
 
-      case 'sede_anagrafica': return (
-        (() => {
+      case 'sede_anagrafica': {
         const canEditSede = ['presidente', 'coordinamento', 'admin', 'superadmin'].includes(userData.ruolo);
         return (
-        <div className="animate-in slide-in-from-right duration-500 w-full pb-40">
+        <div className="animate-in slide-in-from-right duration-500 w-full pb-40 print:pb-0">
+          <div className="print:hidden">
             <HeaderSub title={`Anagrafica ${userData.sede}`} onBack={() => setSubPage('sede_hub')} />
             
             <div className="bg-white p-8 rounded-3xl shadow-card border border-gray-100 space-y-6 font-sans text-pcgl-text-dark">
@@ -6890,8 +8656,14 @@ function AppContent() {
                 </div>
             </div>
 
+            {/* LOCATION PICKER MODAL */}
+            {showLocationPicker && (
+                <LocationPicker initialPos={sedeAnagrafica.posizione} onConfirm={(pos) => { setSedeAnagrafica({...sedeAnagrafica, posizione: pos}); setShowLocationPicker(false); showToast("Posizione sede impostata"); }} onClose={() => setShowLocationPicker(false)} />
+            )}
+          </div>
+
             {/* LAYOUT DI STAMPA SCHEDA SEDE (NASCOSTO A VIDEO) */}
-            <div className="hidden print:block fixed inset-0 bg-white z-[3000] p-12 text-black font-sans h-screen overflow-auto">
+            <div className="hidden print:block w-full bg-white p-8 text-black font-sans">
                 <div className="flex items-center justify-between border-b-4 border-[#001a33] pb-6 mb-8">
                     <div>
                         <h1 className="text-4xl font-black uppercase text-[#001a33] leading-none">Scheda Sede</h1>
@@ -6931,19 +8703,13 @@ function AppContent() {
                     </div>
                 )}
 
-                <div className="fixed bottom-8 left-0 w-full text-center">
+                <div className="mt-8 text-center border-t border-gray-200 pt-4">
                     <p className="text-[10px] text-gray-400 uppercase font-bold">Documento generato il {new Date().toLocaleDateString()} • PCGL.IT</p>
                 </div>
             </div>
-
-            {/* LOCATION PICKER MODAL */}
-            {showLocationPicker && (
-                <LocationPicker initialPos={sedeAnagrafica.posizione} onConfirm={(pos) => { setSedeAnagrafica({...sedeAnagrafica, posizione: pos}); setShowLocationPicker(false); showToast("Posizione sede impostata"); }} onClose={() => setShowLocationPicker(false)} />
-            )}
         </div>
         );
-        })()
-      );
+      }
 
       case 'sedi_list': return (
         <div className="animate-in slide-in-from-right duration-500 w-full pb-40">
@@ -6960,17 +8726,19 @@ function AppContent() {
                     </div>
 
                     {/* PULSANTI NAVIGAZIONE RAPIDA */}
-                    <div className="grid grid-cols-3 gap-2">
-                        <button onClick={() => { setFilterSede(selectedSedeDetail.sede); handleSedeFilterChange(selectedSedeDetail.sede); setPreviousPage('sedi_list'); setSubPage('admin_search'); }} className="p-3 bg-blue-50 text-blue-700 rounded-xl font-bold uppercase text-xs flex flex-col items-center justify-center hover:bg-blue-100 transition-colors">
-                            <Users size={20} className="mb-1"/> Volontari
-                        </button>
-                        <button onClick={() => { setFilterSede(selectedSedeDetail.sede); setPreviousPage('sedi_list'); setSubPage('gestione_mezzi'); }} className="p-3 bg-blue-50 text-blue-700 rounded-xl font-bold uppercase text-xs flex flex-col items-center justify-center hover:bg-blue-100 transition-colors">
-                            <Truck size={20} className="mb-1"/> Mezzi
-                        </button>
-                        <button onClick={() => { setFilterSede(selectedSedeDetail.sede); setPreviousPage('sedi_list'); setSubPage('documenti_view'); }} className="p-3 bg-blue-50 text-blue-700 rounded-xl font-bold uppercase text-xs flex flex-col items-center justify-center hover:bg-blue-100 transition-colors">
-                            <FileText size={20} className="mb-1"/> Documenti
-                        </button>
-                    </div>
+                    {(['admin', 'superadmin', 'coordinamento'].includes(userData.ruolo) || selectedSedeDetail.sede === userData.sede) && (
+                        <div className="grid grid-cols-3 gap-2">
+                            <button onClick={() => { setFilterSede(selectedSedeDetail.sede); handleSedeFilterChange(selectedSedeDetail.sede); setPreviousPage('sedi_list'); setSubPage('admin_search'); }} className="p-3 bg-blue-50 text-blue-700 rounded-xl font-bold uppercase text-xs flex flex-col items-center justify-center hover:bg-blue-100 transition-colors">
+                                <Users size={20} className="mb-1"/> Volontari
+                            </button>
+                            <button onClick={() => { setFilterSede(selectedSedeDetail.sede); setPreviousPage('sedi_list'); setSubPage('gestione_mezzi'); }} className="p-3 bg-blue-50 text-blue-700 rounded-xl font-bold uppercase text-xs flex flex-col items-center justify-center hover:bg-blue-100 transition-colors">
+                                <Truck size={20} className="mb-1"/> Mezzi
+                            </button>
+                            <button onClick={() => { setFilterSede(selectedSedeDetail.sede); setPreviousPage('sedi_list'); setSubPage('documenti_view'); }} className="p-3 bg-blue-50 text-blue-700 rounded-xl font-bold uppercase text-xs flex flex-col items-center justify-center hover:bg-blue-100 transition-colors">
+                                <FileText size={20} className="mb-1"/> Documenti
+                            </button>
+                        </div>
+                    )}
 
                     <div className="bg-gray-50 p-6 rounded-2xl border border-gray-200 space-y-3">
                         <h4 className="font-bold text-lg text-pcgl-blue uppercase border-b pb-2 mb-2">Dati Generali</h4>
@@ -7004,7 +8772,7 @@ function AppContent() {
                 </div>
             ) : (
                 <div className="space-y-4 font-sans text-pcgl-text-dark">
-                    {appConfig.sedi && Array.isArray(appConfig.sedi) && appConfig.sedi.length > 0 ? appConfig.sedi.map((s, idx) => {
+                    {appConfig.sedi && Array.isArray(appConfig.sedi) && appConfig.sedi.length > 0 ? appConfig.sedi.filter(s => s.s !== 'SEDE TEST FITTIZIA' || userData?.originalRuolo === 'superadmin' || userData?.ruolo === 'superadmin').map((s, idx) => {
                         if (!s || !s.s) return null;
                         const dbData = sediList.find(d => d.sede === s.s);
                         
@@ -7053,7 +8821,7 @@ function AppContent() {
         </div>
       );
 
-      case 'modules_view': return <ModulesManager currentUser={userData} onBack={() => setSubPage(previousPage || 'home')} allUsers={allUsers} onViewVolunteer={handleViewVolunteer} />;
+      case 'modules_view': return <ModulesManager currentUser={userData} onBack={() => setSubPage(previousPage || 'home')} allUsers={allUsers} onViewVolunteer={handleViewVolunteer} customForms={customForms || []} onFillForm={handleFillForm} />;
 
       case 'sede_hub': return (
         <div className="animate-in slide-in-from-right duration-500 w-full pb-40">
@@ -7127,6 +8895,53 @@ function AppContent() {
                     <button onClick={deleteVersionConfig} className="flex-1 py-4 bg-red-50 text-red-600 font-bold text-sm rounded-xl shadow-sm active:scale-95 transition-all hover:bg-red-100 border border-red-100">Elimina Rilascio</button>
                     <button onClick={saveVersionConfig} className="flex-[2] py-4 bg-pcgl-blue text-pcgl-yellow font-bold text-lg rounded-xl shadow-lg active:scale-95 transition-all hover:bg-pcgl-yellow hover:text-pcgl-blue hover:shadow-xl">Salva Modifiche</button>
                 </div>
+
+                <div className="border-t border-gray-200 mt-8 pt-6">
+                    <h4 className="font-bold text-lg text-pcgl-blue mb-4">Notifiche di Sistema</h4>
+                    <button onClick={async () => {
+                        if (!window.confirm("Vuoi inviare a tutti gli utenti la notifica push di lancio del nuovo modulo SOGL?")) return;
+                        try {
+                            await addDoc(collection(db, 'news'), {
+                                titolo: 'LANCIO NUOVO MODULO S.O.G.L.',
+                                testo: 'È ora disponibile il nuovo modulo Sala Operativa (SOGL). Tutti gli utenti abilitati possono ora gestire emergenze, logistica, campagne AIB e monitorare la flotta mezzi direttamente dall\'app. Accedi alla sezione Sala Op. per scoprire le novità!',
+                                testoBreve: 'Nuovo modulo Sala Operativa (SOGL) disponibile. Scopri le nuove funzionalità.',
+                                importante: true,
+                                visibilita: 'pubblica',
+                                dataScadenza: new Date(Date.now() + 15 * 24 * 60 * 60 * 1000).toISOString(),
+                                timestamp: serverTimestamp(),
+                                data: new Date().toLocaleDateString('it-IT'),
+                                autore: 'Direzione Generale',
+                                sede: 'TUTTE',
+                                archived: false
+                            });
+                            showToast("Notifica di lancio inviata con successo!");
+                        } catch (e) {
+                            console.error(e);
+                            showToast("Errore invio notifica.", 'error');
+                        }
+                    }} className="w-full py-4 bg-green-600 text-white font-bold text-sm rounded-xl shadow-md hover:bg-green-700 transition-all uppercase">
+                        Invia Notifica Lancio SOGL a tutti
+                    </button>
+                </div>
+            </div>
+
+            <div className="bg-white p-8 rounded-3xl shadow-card border border-gray-100 space-y-4 mt-6">
+                <h3 className="font-bold text-xl text-pcgl-blue mb-2 uppercase flex items-center"><Send className="mr-2" size={24}/> Invia Messaggio Telegram</h3>
+                <p className="text-sm text-gray-500 mb-4">Invia un messaggio di testo personalizzato direttamente nel canale Telegram ufficiale tramite il Bot.</p>
+                <textarea className="w-full p-4 bg-gray-50 rounded-lg border border-gray-200 font-medium focus:border-pcgl-yellow transition-all resize-none" rows="4" placeholder="Testo del messaggio (puoi usare formattazione HTML base come <b>grassetto</b>, <i>corsivo</i>, <a>link</a>)..." value={customTelegramMessage} onChange={(e) => setCustomTelegramMessage(e.target.value)}></textarea>
+                
+                <div className="bg-gray-50 p-4 rounded-xl border border-gray-200 mt-2 mb-4 text-left">
+                    <p className="text-xs font-bold text-gray-400 uppercase mb-2">Aggiungi Bottone Interattivo (Opzionale)</p>
+                    <div className="flex gap-2">
+                        <input type="text" placeholder="Es. Apri Modulo" className="flex-[1] p-3 bg-white rounded-lg border text-sm font-medium" value={tgButtonText} onChange={(e) => setTgButtonText(e.target.value)} />
+                        <input type="text" placeholder="https://..." className="flex-[2] p-3 bg-white rounded-lg border text-sm font-medium" value={tgButtonUrl} onChange={(e) => setTgButtonUrl(e.target.value)} />
+                    </div>
+                </div>
+
+                <button onClick={handleSendCustomTelegram} disabled={sendingTelegram} className="w-full py-4 bg-[#0088cc] text-white rounded-xl font-bold uppercase shadow-md flex items-center justify-center disabled:opacity-50 hover:bg-[#0077b3] transition-colors">
+                    {sendingTelegram ? <span className="animate-spin rounded-full h-5 w-5 border-b-2 border-white mr-2"></span> : <Send className="mr-2" size={20}/>}
+                    {sendingTelegram ? 'Invio in corso...' : 'Invia al Canale Telegram'}
+                </button>
             </div>
         </div>
       );
@@ -7194,6 +9009,46 @@ function AppContent() {
           <HeaderSub title="Impostazioni" onBack={() => setSubPage(null)} />
           <div className="space-y-6 font-sans text-pcgl-text-dark">
             
+            {userData?.originalRuolo === 'superadmin' && (
+              <div className="bg-white p-8 rounded-3xl shadow-card border-2 border-purple-200 space-y-4">
+                <h3 className="font-bold text-xl text-purple-700 mb-2 uppercase flex items-center"><Eye className="mr-2"/> Modalità Sviluppatore</h3>
+                <p className="text-sm text-gray-500 mb-4">Simula l'app dal punto di vista di un altro ruolo per testare le funzionalità. Tutte le interfacce e i permessi locali si adatteranno al ruolo scelto.</p>
+                <div className="flex gap-2">
+                    <select 
+                        className="w-full p-4 bg-purple-50 text-purple-800 rounded-xl border border-purple-200 font-bold uppercase text-sm outline-none focus:ring-2 focus:ring-purple-400 transition-all"
+                        value={userData.ruolo}
+                        onChange={(e) => {
+                            if (e.target.value === 'superadmin') {
+                                localStorage.removeItem('pcgl_simulated_role');
+                            } else {
+                                localStorage.setItem('pcgl_simulated_role', e.target.value);
+                            }
+                            window.location.reload();
+                        }}
+                    >
+                        <option value="superadmin">🔴 Superadmin (Reale)</option>
+                        <option value="admin">🟠 Admin</option>
+                        <option value="coordinamento">🟣 Coordinamento</option>
+                        <option value="presidente">🔵 Presidente</option>
+                        <option value="volontario">🟢 Volontario</option>
+                    </select>
+                </div>
+              </div>
+            )}
+
+            <div className="bg-white p-8 rounded-3xl shadow-card border border-gray-100 space-y-6">
+                <h3 className="font-bold text-xl text-pcgl-blue mb-2 uppercase">Sicurezza Account</h3>
+                <p className="text-sm text-gray-500 mb-6">Richiedi un'email per modificare la tua password di accesso all'app.</p>
+                <button onClick={async () => {
+                    if (window.confirm("Vuoi ricevere un'email per reimpostare la tua password?")) {
+                        try { await sendPasswordResetEmail(auth, user.email); showToast("Email di reset inviata! Controlla la posta."); }
+                        catch (err) { showToast("Errore invio: " + err.message, "error"); }
+                    }
+                }} className="w-full py-3 bg-white border-2 border-pcgl-blue text-pcgl-blue rounded-xl font-bold uppercase shadow-md active:scale-95 transition-all flex items-center justify-center hover:bg-blue-50">
+                    <Lock className="mr-2" size={20}/> Cambia Password
+                </button>
+            </div>
+            
             <div className="bg-white p-8 rounded-3xl shadow-card border border-gray-100 space-y-6">
                 <h3 className="font-bold text-xl text-pcgl-blue mb-2 uppercase">Permessi App</h3>
                 <p className="text-sm text-gray-500 mb-6">Gestisci i permessi per garantire il corretto funzionamento dell'app.</p>
@@ -7223,6 +9078,14 @@ function AppContent() {
 
                 {userData.ruolo === 'superadmin' && (
                     <button onClick={() => setSubPage('admin_version_control')} className="w-full py-3 mb-4 bg-gray-800 text-white rounded-xl font-bold uppercase shadow-md active:scale-95 transition-all flex items-center justify-center"><Settings className="mr-2" size={20}/> Gestione Rilasci (OTA)</button>
+                )}
+
+                {/* SINCRONIZZAZIONE MOODLE */}
+                {userData.ruolo === 'superadmin' && (
+                    <button onClick={handleSyncMoodle} disabled={syncingMoodle} className="w-full py-3 mb-4 bg-purple-600 text-white rounded-xl font-bold uppercase shadow-md active:scale-95 transition-all flex items-center justify-center disabled:opacity-50">
+                        {syncingMoodle ? <span className="animate-spin rounded-full h-5 w-5 border-b-2 border-white mr-2"></span> : <BookOpen className="mr-2" size={20}/>} 
+                        {syncingMoodle ? "Sincronizzazione in corso..." : "Sincronizza Utenti su Moodle"}
+                    </button>
                 )}
 
                 {/* NOTIFICHE */}
@@ -7280,6 +9143,26 @@ function AppContent() {
 
             <div className="bg-white p-8 rounded-3xl shadow-card border border-gray-100 space-y-6">
                 <h3 className="font-bold text-xl text-pcgl-blue mb-2 uppercase">Preferenze</h3>
+                
+                <div className="flex items-center justify-between p-4 bg-orange-50 rounded-2xl border border-orange-200 cursor-pointer" onClick={async () => {
+                    const newVal = !(userData.allerteAIB || false);
+                    try {
+                        await updateDoc(doc(db, 'users', user.uid), { allerteAIB: newVal });
+                        setUserData(prev => ({...prev, allerteAIB: newVal}));
+                        showToast(newVal ? "Allerte AIB Attivate" : "Allerte AIB Disattivate");
+                    } catch(e) { console.error(e); }
+                }}>
+                    <div className="flex items-center">
+                        <Flame size={20} className="text-orange-500 mr-3" />
+                        <div>
+                            <span className="font-bold text-sm uppercase text-orange-800">Allerte AIB</span>
+                            <p className="text-[10px] text-orange-600">Ricevi notifiche per incendi boschivi</p>
+                        </div>
+                    </div>
+                    <div className={`w-12 h-6 rounded-full p-1 transition-colors ${userData.allerteAIB ? 'bg-orange-500' : 'bg-gray-300'}`}>
+                        <div className={`w-4 h-4 bg-white rounded-full shadow-md transform transition-transform ${userData.allerteAIB ? 'translate-x-6' : ''}`}></div>
+                    </div>
+                </div>
                 
                 <div className="flex items-center justify-between p-4 bg-gray-50 rounded-2xl border border-gray-200 cursor-pointer" onClick={() => updatePref('sound', !prefs.sound)}>
                     <span className="font-bold text-sm uppercase text-pcgl-blue">Suoni Allerta</span>
@@ -7408,6 +9291,16 @@ function AppContent() {
       default: return null;
     }
   };
+
+  const heroStyle = getHeroStyle(userData?.ruolo);
+  
+  const areeVisibili = areeTematiche.filter(a => ['admin', 'superadmin', 'coordinamento'].includes(userData?.ruolo) || a.sediAbilitate?.includes(userData?.sede) || a.utentiAbilitati?.includes(userData?.uid));
+  const showProgettiBtn = ['admin', 'superadmin', 'coordinamento'].includes(userData?.ruolo) || areeVisibili.length > 0;
+  
+  // Controllo permessi per Sala Operativa
+  const canAccessSalaOperativa = ['admin', 'superadmin', 'coordinamento'].includes(userData?.ruolo) || userData?.moduli?.some(m => m.toUpperCase().includes('SALA OPERATIVA'));
+
+  const isAibSeason = new Date().getMonth() >= 6 && new Date().getMonth() <= 8; // Da Luglio (6) a Settembre (8)
 
   // --- RENDER MAIN UI ---
   if (loading) return (
@@ -7761,66 +9654,71 @@ function AppContent() {
   );
 
   return (
-    <div className="min-h-screen bg-pcgl-bg-light flex flex-col items-center overflow-x-hidden font-sans text-pcgl-text-dark notranslate" translate="no">
+    <div className="min-h-screen bg-pcgl-bg-light flex flex-col items-center overflow-x-hidden print:overflow-visible font-sans text-pcgl-text-dark notranslate" translate="no">
       
       {/* OVERLAY NOTIFICA (MODIFICATO PER PARTECIPAZIONE) */}
       {attivazioniAttive.length > 0 && participationStatus === 'pending' && userData?.ruolo !== 'presidente' && (Array.isArray(attivazioniAttive[0].zone) ? attivazioniAttive[0].zone.includes(userData.sede) : attivazioniAttive[0].zona === userData.sede) && dismissedAlertId !== attivazioniAttive[0].id && (
-        <div className="fixed inset-0 z-[200] bg-red-600 flex flex-col items-center justify-center p-8 text-white animate-in zoom-in duration-300">
-           <TriangleAlert size={80} className="animate-pulse mb-6 text-white"/>
-           <h1 className="text-3xl md:text-4xl font-black uppercase text-center mb-2 leading-tight">{attivazioniAttive[0].titolo}</h1>
-           <p className="text-lg font-bold uppercase tracking-widest opacity-80 mb-6">Richiesta Disponibilità</p>
-           
-           {/* INFO ALLERTA */}
-           <div className="bg-white/10 p-6 rounded-2xl backdrop-blur-md border border-white/20 mb-8 w-full max-w-md shadow-lg">
-               <p className="text-xs font-bold uppercase opacity-70 mb-1">Dettagli Operativi</p>
-               <p className="text-sm font-medium italic mb-3 leading-relaxed">{attivazioniAttive[0].dettagli || "Nessun dettaglio specificato."}</p>
-               <div className="flex justify-between items-center text-xs font-bold opacity-80 border-t border-white/20 pt-3">
-                   <span>Data: {new Date(attivazioniAttive[0].dataAttivazione).toLocaleDateString()}</span>
-                   <span>Ora: {new Date(attivazioniAttive[0].dataAttivazione).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'})}</span>
+        <div className="fixed inset-0 z-[200] bg-red-600 overflow-y-auto animate-in zoom-in duration-300">
+           <div className="min-h-full flex flex-col items-center justify-center p-8 text-white">
+               <TriangleAlert size={80} className="animate-pulse mb-6 text-white"/>
+               <h1 className="text-3xl md:text-4xl font-black uppercase text-center mb-2 leading-tight">{attivazioniAttive[0].titolo}</h1>
+               <p className="text-lg font-bold uppercase tracking-widest opacity-80 mb-6">Richiesta Disponibilità</p>
+               
+               {/* INFO ALLERTA */}
+               <div className="bg-white/10 p-6 rounded-2xl backdrop-blur-md border border-white/20 mb-8 w-full max-w-md shadow-lg">
+                   <p className="text-xs font-bold uppercase opacity-70 mb-1">Dettagli Operativi</p>
+                   <p className="text-sm font-medium italic mb-3 leading-relaxed">{attivazioniAttive[0].dettagli || "Nessun dettaglio specificato."}</p>
+                   <div className="flex justify-between items-center text-xs font-bold opacity-80 border-t border-white/20 pt-3">
+                       <span>Data: {new Date(attivazioniAttive[0].dataAttivazione).toLocaleDateString()}</span>
+                       <span>Ora: {new Date(attivazioniAttive[0].dataAttivazione).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'})}</span>
+                   </div>
                </div>
-           </div>
 
-           <div className="w-full max-w-sm space-y-3">
-              <button onClick={() => handleParticipation(attivazioniAttive[0].id, 'accepted')} className="w-full py-4 bg-white text-red-600 rounded-xl font-black text-lg shadow-xl active:scale-95 transition-all">PARTECIPO ORA</button>
-              <button onClick={() => setDismissedAlertId(attivazioniAttive[0].id)} className="w-full py-4 bg-red-800/50 text-white border-2 border-white/30 rounded-xl font-bold text-sm uppercase shadow-lg active:scale-95 transition-all hover:bg-red-800">Disponibilità Successiva</button>
-              <button onClick={() => handleParticipation(attivazioniAttive[0].id, 'declined')} className="w-full py-2 text-xs font-bold text-white/60 uppercase hover:text-white mt-2">Non Disponibile</button>
+               <div className="w-full max-w-sm space-y-3">
+                  <button onClick={() => handleParticipation(attivazioniAttive[0].id, 'accepted')} className="w-full py-4 bg-white text-red-600 rounded-xl font-black text-lg shadow-xl active:scale-95 transition-all">PARTECIPO ORA</button>
+                  <button onClick={() => setDismissedAlertId(attivazioniAttive[0].id)} className="w-full py-4 bg-red-800/50 text-white border-2 border-white/30 rounded-xl font-bold text-sm uppercase shadow-lg active:scale-95 transition-all hover:bg-red-800">Disponibilità Successiva</button>
+                  <button onClick={() => handleParticipation(attivazioniAttive[0].id, 'declined')} className="w-full py-2 text-xs font-bold text-white/60 uppercase hover:text-white mt-2">Non Disponibile</button>
+               </div>
            </div>
         </div>
       )}
       
       {/* HEADER PCGL PRO */}
-      <header className="w-full max-w-6xl px-6 py-4 sticky top-0 z-[150] flex justify-between items-center bg-white/70 backdrop-blur-md border-b border-gray-100 shadow-sm">
+      <header className="w-full max-w-6xl px-6 py-4 sticky top-0 z-[150] flex justify-between items-center bg-white/70 backdrop-blur-md border-b border-gray-100 shadow-sm print:hidden">
         <div className="flex items-center space-x-4">
           <img src={APP_LOGO} alt="Logo" className="w-14 h-14 rounded-lg shadow-md shadow-pcgl-blue/20" />
           <div>
             <span className="font-black text-3xl italic tracking-tighter text-pcgl-blue block leading-none">PCGL.IT</span>
-            <span className="text-xs font-bold uppercase text-gray-400 tracking-widest mt-0.5 block ml-0.5">Sistema Operativo</span>
+            <span className="text-xs font-bold uppercase text-gray-400 tracking-widest mt-0.5 flex items-center ml-0.5">
+                Sistema Operativo
+                {userData?.originalRuolo === 'superadmin' && userData?.ruolo !== 'superadmin' && (
+                    <span className="ml-2 bg-purple-100 text-purple-700 px-2 py-0.5 rounded-full text-[9px] font-black animate-pulse">Simulazione: {userData.ruolo} (TEST)</span>
+                )}
+            </span>
           </div>
         </div>
         {isOffline && <div className="bg-red-500 text-white text-[10px] font-bold px-2 py-1 rounded uppercase animate-pulse">OFFLINE</div>}
         <button onClick={() => signOut(auth)} className="p-3 bg-red-50 text-red-500 rounded-lg active:scale-90 shadow-md transition-all hover:bg-red-100"><LogOut size={20}/></button>
       </header>
 
-      <main className="w-full max-w-4xl px-6 py-8 pb-32 flex flex-col items-center relative">
+      <main className="w-full max-w-4xl px-6 py-8 pb-32 flex flex-col items-center relative print:p-0 print:m-0">
         {subPage ? renderSubPage() : (
           <div className="w-full space-y-6 animate-in fade-in duration-1000">
             {activeTab === 'home' && (
               <div className="w-full space-y-6">
                 {/* Header / Hero Card */}
-                {(() => { const style = getHeroStyle(userData?.ruolo); return (
-                <div className={`${style.cardBg} rounded-[4rem] p-10 shadow-[0_35px_60px_-15px_rgba(0,26,51,0.3)] relative overflow-hidden animate-in zoom-in duration-500`}>
-                  <div className={`absolute -top-20 -right-20 w-64 h-64 ${style.blobColor} opacity-10 rounded-full blur-3xl`}></div>
-                  <p className={`${style.accentColor} font-black italic uppercase tracking-widest text-sm mb-2`}>Operativo</p>
-                  <h1 className={`${style.textColor} font-black italic leading-none mb-4 truncate w-full ${Math.max(userData?.nome?.length || 0, userData?.cognome?.length || 0) > 12 ? "text-xl md:text-3xl" : "text-2xl md:text-4xl"}`}>{userData?.nome}<br/>{userData?.cognome}</h1>
+                <div className={`${heroStyle.cardBg} rounded-[4rem] p-10 shadow-[0_35px_60px_-15px_rgba(0,26,51,0.3)] relative overflow-hidden animate-in zoom-in duration-500`}>
+                  <div className={`absolute -top-20 -right-20 w-64 h-64 ${heroStyle.blobColor} opacity-10 rounded-full blur-3xl`}></div>
+                  <p className={`${heroStyle.accentColor} font-black italic uppercase tracking-widest text-sm mb-2`}>Operativo</p>
+                  <h1 className={`${heroStyle.textColor} font-black italic leading-none mb-4 truncate w-full ${Math.max(userData?.nome?.length || 0, userData?.cognome?.length || 0) > 12 ? "text-xl md:text-3xl" : "text-2xl md:text-4xl"}`}>{userData?.nome}<br/>{userData?.cognome}</h1>
                   <div className="flex items-center gap-4 mt-6">
-                    <div className={`${style.iconBg} p-3 rounded-2xl relative`}>
-                        <Shield size={24} className={style.iconColor} />
+                    <div className={`${heroStyle.iconBg} p-3 rounded-2xl relative`}>
+                        <Shield size={24} className={heroStyle.iconColor} />
                         {hasNewDocs && <span className="absolute -top-1 -right-1 w-3 h-3 bg-red-500 rounded-full border-2 border-white animate-pulse"></span>}
                     </div>
-                    <div><p className={`${style.subTextColor} text-xs uppercase font-bold tracking-tight`}>Ruolo / Sede</p><p className={`${style.textColor} font-bold italic`}>{userData?.ruolo} / {userData?.sede}</p></div>
+                    <div><p className={`${heroStyle.subTextColor} text-xs uppercase font-bold tracking-tight`}>Ruolo / Sede</p><p className={`${heroStyle.textColor} font-bold italic`}>{userData?.ruolo} / {userData?.sede}</p></div>
                   </div>
                 </div>
-                ); })()}
 
                 {/* Widget Stato Allerte (Bollettino + GL) */}
                 <div className="grid grid-cols-2 gap-4 w-full">
@@ -7883,12 +9781,29 @@ function AppContent() {
                     <div className={`${attivazioniAttive.length > 0 ? 'bg-white/20' : 'bg-red-50'} p-5 rounded-[2rem]`}>{attivazioniAttive.length > 0 ? getWeatherIcon(attivazioniAttive[0].colore) : <Shield size={32} className="text-red-600" />}</div>
                     <span className={`font-black italic uppercase text-sm md:text-lg ${attivazioniAttive.length > 0 ? 'text-white' : 'text-red-600'}`}>Allerta</span>
                   </button>
+                  <button onClick={() => setSubPage('campagna_aib')} className={`${isAibSeason ? 'bg-orange-600' : 'bg-white'} rounded-[3.5rem] p-8 shadow-[0_20px_50px_rgba(0,0,0,0.05)] flex flex-col items-center justify-center gap-4 transition-transform active:scale-95 border border-orange-100`}>
+                    <div className={`${isAibSeason ? 'bg-white/20' : 'bg-orange-50'} p-5 rounded-[2rem]`}><Flame size={32} className={`${isAibSeason ? 'text-white' : 'text-orange-600'}`} /></div>
+                    <span className={`font-black italic uppercase text-sm md:text-lg text-center leading-tight ${isAibSeason ? 'text-white' : 'text-orange-600'}`}>Campagna<br/>AIB</span>
+                  </button>
+                  <button onClick={() => setSubPage('live_diretta')} className="bg-white rounded-[3.5rem] p-8 shadow-[0_20px_50px_rgba(0,0,0,0.05)] flex flex-col items-center justify-center gap-4 transition-transform active:scale-95 border border-red-100">
+                    <div className="bg-red-50 p-5 rounded-[2rem]"><Video size={32} className="text-red-600" /></div><span className="font-black italic uppercase text-sm md:text-lg text-red-600">Diretta</span>
+                  </button>
                   <button onClick={() => setSubPage('sede_hub')} className="bg-white rounded-[3.5rem] p-8 shadow-[0_20px_50px_rgba(0,0,0,0.05)] flex flex-col items-center justify-center gap-4 transition-transform active:scale-95">
                     <div className="bg-blue-50 p-5 rounded-[2rem]"><Home size={32} className="text-[#001a33]" /></div><span className="font-black italic uppercase text-sm md:text-lg">Sede</span>
                   </button>
                   <button onClick={() => setSubPage('modules_view')} className="bg-white rounded-[3.5rem] p-8 shadow-[0_20px_50px_rgba(0,0,0,0.05)] flex flex-col items-center justify-center gap-4 transition-transform active:scale-95">
                     <div className="bg-blue-50 p-5 rounded-[2rem]"><Shield size={32} className="text-[#001a33]" /></div><span className="font-black italic uppercase text-sm md:text-lg">Moduli</span>
                   </button>
+                  {showProgettiBtn && (
+                    <button onClick={() => setSubPage('progetti_view')} className="bg-white rounded-[3.5rem] p-8 shadow-[0_20px_50px_rgba(0,0,0,0.05)] flex flex-col items-center justify-center gap-4 transition-transform active:scale-95">
+                      <div className="bg-blue-50 p-5 rounded-[2rem]"><FolderKanban size={32} className="text-[#001a33]" /></div><span className="font-black italic uppercase text-sm md:text-lg">Progetti</span>
+                    </button>
+                  )}
+                  {canAccessSalaOperativa && (
+                    <button onClick={() => setSubPage('sala_operativa')} className="bg-white rounded-[3.5rem] p-8 shadow-[0_20px_50px_rgba(0,0,0,0.05)] flex flex-col items-center justify-center gap-4 transition-transform active:scale-95">
+                      <div className="bg-red-50 p-5 rounded-[2rem]"><Radio size={32} className="text-red-600" /></div><span className="font-black italic uppercase text-sm md:text-lg">Sala Op.</span>
+                    </button>
+                  )}
                   <button onClick={() => setSubPage('disponibilita_view')} className="bg-white rounded-[3.5rem] p-8 shadow-[0_20px_50px_rgba(0,0,0,0.05)] flex flex-col items-center justify-center gap-4 transition-transform active:scale-95">
                     <div className="bg-blue-50 p-5 rounded-[2rem]"><CalendarIcon size={32} className="text-[#001a33]" /></div><span className="font-black italic uppercase text-sm md:text-lg">Turni</span>
                   </button>
@@ -7968,12 +9883,18 @@ function AppContent() {
                   </div>
                 )}
                 <div className="grid grid-cols-2 gap-4">
+                   {canAccessSalaOperativa && (
+                     <button onClick={() => setSubPage('sala_operativa')} className="p-6 bg-red-50 text-red-600 border border-red-100 rounded-xl shadow-card flex flex-col items-center active:scale-95 transition-all hover:scale-[1.02] col-span-2">
+                         <Radio size={64} />
+                         <span className="text-xl font-bold mt-2 tracking-wide uppercase">Sala Operativa</span>
+                     </button>
+                   )}
                    <button onClick={() => setSubPage('news_gest')} className="p-6 bg-white rounded-xl shadow-card border border-gray-100 flex flex-col items-center active:scale-95 transition-all hover:scale-[1.02] hover:bg-pcgl-bg-light"><Megaphone size={48} color="pcgl-blue"/><span className="text-sm font-bold mt-2 text-gray-500 tracking-wide uppercase">News</span></button>
                    <button onClick={() => setSubPage('gestione_mezzi')} className="p-6 bg-white rounded-xl shadow-card border border-gray-100 flex flex-col items-center active:scale-95 transition-all hover:scale-[1.02] hover:bg-pcgl-bg-light"><Truck size={48} color="pcgl-blue"/><span className="text-sm font-bold mt-2 text-gray-500 tracking-wide uppercase">Mezzi</span></button>
                    <button onClick={() => setSubPage('allerta_gest')} className="p-6 bg-red-600 text-white rounded-xl shadow-xl flex flex-col items-center active:scale-95 transition-all col-span-2 shadow-red-900/40 hover:scale-[1.02] hover:bg-red-700"><TriangleAlert size={64}/><span className="text-xl font-bold mt-2 tracking-wide uppercase">Allerta GL</span></button>
                    {['coordinamento', 'admin', 'superadmin'].includes(userData.ruolo) && (
                      <>
-                       <button onClick={() => setSubPage('gestione_corsi_admin')} className="p-6 bg-pcgl-blue text-pcgl-yellow rounded-xl shadow-xl flex flex-col items-center active:scale-95 transition-all col-span-2 border-b-2 border-pcgl-yellow/20 hover:scale-[1.02] hover:bg-blue-900/90"><UserCheck size={64}/><span className="text-xl font-bold mt-2 tracking-wide uppercase">Conferma Corsi</span></button>
+                       <button onClick={() => setSubPage('gestione_corsi_admin')} className="p-6 bg-pcgl-blue text-pcgl-yellow rounded-xl shadow-xl flex flex-col items-center active:scale-95 transition-all col-span-2 border-b-2 border-pcgl-yellow/20 hover:scale-[1.02] hover:bg-blue-900/90"><UserCheck size={64}/><span className="text-xl font-bold mt-2 tracking-wide uppercase">Conferma Presenze</span></button>
                        <button onClick={() => setSubPage('documenti_gest')} className="p-6 bg-white border-2 border-pcgl-blue rounded-xl shadow-xl flex flex-col items-center active:scale-95 transition-all hover:scale-[1.02] hover:bg-pcgl-bg-light"><File size={48} color="pcgl-blue"/><span className="text-sm font-bold mt-2 text-gray-500 tracking-wide uppercase">Documenti</span></button>
                      </>
                    )}
@@ -7997,7 +9918,7 @@ function AppContent() {
       </main>
       
       {/* Footer fisso sempre visibile (sotto la navbar) */}
-      <FooterLinks fixed={true} className="pb-1" />
+      <FooterLinks fixed={true} className="pb-1 print:hidden" />
 
       {/* TOAST NOTIFICATION COMPONENT */}
       {toast && (
@@ -8105,11 +10026,13 @@ function AppContent() {
       {/* MODALE COMPLETAMENTO PROFILO */}
       {showProfileWarning && (
         <div className="fixed inset-0 z-[2000] bg-black/80 flex items-center justify-center p-6 animate-in fade-in">
-            <div className="bg-white p-8 rounded-3xl shadow-2xl max-w-sm text-center">
+            <div className="bg-white p-8 rounded-3xl shadow-2xl max-w-sm text-center relative">
+                <button onClick={() => { setShowProfileWarning(false); sessionStorage.setItem('pcgl_profile_warning_dismissed', 'true'); }} className="absolute top-4 right-4 text-gray-400 hover:text-gray-600"><X size={24}/></button>
                 <UserCheck size={48} className="text-orange-500 mx-auto mb-4"/>
                 <h3 className="text-xl font-black text-pcgl-blue uppercase mb-2">Profilo Incompleto</h3>
                 <p className="text-sm text-gray-500 mb-6">Per generare il tesserino digitale completo, inserisci i dati mancanti (Foto, Telefono, Indirizzo, Gruppo Sanguigno).</p>
-                <button onClick={() => { setSubPage('fascicolo_edit'); setShowProfileWarning(false); }} className="w-full py-3 bg-orange-500 text-white rounded-xl font-bold uppercase shadow-lg">Completa Profilo</button>
+                <button onClick={() => { setSubPage('fascicolo_edit'); setShowProfileWarning(false); }} className="w-full py-3 bg-orange-500 text-white rounded-xl font-bold uppercase shadow-lg mb-3">Completa Profilo</button>
+                <button onClick={() => { setShowProfileWarning(false); sessionStorage.setItem('pcgl_profile_warning_dismissed', 'true'); }} className="w-full font-bold uppercase text-xs text-gray-400 hover:text-pcgl-blue transition-colors">Ricordamelo dopo</button>
             </div>
         </div>
       )}
@@ -8129,11 +10052,31 @@ function AppContent() {
         </div>
       )}
 
+      {/* CAMERA PERMISSION MODAL */}
+      {showCameraPermissionModal && (
+        <div className="fixed inset-0 z-[2000] bg-black/80 flex items-center justify-center p-6 animate-in fade-in">
+            <div className="bg-white p-8 rounded-3xl shadow-2xl max-w-sm text-center relative">
+                <button onClick={() => setShowCameraPermissionModal(false)} className="absolute top-4 right-4 text-gray-400 hover:text-gray-600"><X size={24}/></button>
+                <Camera size={48} className="text-red-500 mx-auto mb-4 animate-bounce"/>
+                <h3 className="text-xl font-black text-pcgl-blue uppercase mb-2">Fotocamera Bloccata</h3>
+                <p className="text-sm text-gray-500 mb-6">
+                    L'app non ha i permessi per utilizzare la fotocamera, necessari per scansionare i QR Code. 
+                    Devi autorizzare l'accesso cliccando "Consenti" oppure modificando le impostazioni del browser (icona del lucchetto 🔒 nella barra in alto).
+                </p>
+                <button onClick={() => {
+                    setShowCameraPermissionModal(false);
+                    handleOpenScanner(scannerMode);
+                }} className="w-full py-3 bg-pcgl-blue text-white rounded-xl font-bold uppercase shadow-lg mb-3">Riprova Accesso</button>
+                <button onClick={() => setShowCameraPermissionModal(false)} className="text-xs text-gray-400 font-bold uppercase">Chiudi</button>
+            </div>
+        </div>
+      )}
+
       {/* QR SCANNER OVERLAY */}
-      {showScanner && <QrScanner onScan={handleScan} onClose={() => setShowScanner(false)} />}
+      {showScanner && <QrScanner onScan={handleScan} onClose={() => setShowScanner(false)} continuous={scannerMode === 'session_checkin'} />}
 
       {/* FOOTER NAV ULTRA-MODERNA */}
-      <div className="fixed bottom-8 left-1/2 -translate-x-1/2 w-[90%] max-w-md h-24 bg-white/70 backdrop-blur-2xl border border-white/20 rounded-[3rem] shadow-[0_25px_50px_-12px_rgba(0,0,0,0.15)] flex items-center justify-around px-4 z-50">
+      <div className="fixed bottom-8 left-1/2 -translate-x-1/2 w-[90%] max-w-md h-24 bg-white/70 backdrop-blur-2xl border border-white/20 rounded-[3rem] shadow-[0_25px_50px_-12px_rgba(0,0,0,0.15)] flex items-center justify-around px-4 z-50 print:hidden">
         <button onClick={() => { setActiveTab('home'); setSubPage(null); }} className={`p-4 transition-colors ${activeTab === 'home' ? 'text-[#001a33]' : 'text-[#001a33]/40 hover:text-[#001a33]'}`}><Home size={28} /></button>
         <button onClick={() => { setActiveTab('tessera'); setSubPage(null); }} className="bg-[#001a33] p-6 rounded-full -translate-y-8 shadow-[0_15px_30px_rgba(0,26,51,0.4)] border-8 border-[#f8fafc] text-[#FFCC00] transition-transform active:scale-90"><QrCode size={36} /></button>
         <button onClick={() => setSubPage('fascicolo_edit')} className="p-4 text-[#001a33]/40 hover:text-[#001a33] transition-colors relative">
@@ -8154,6 +10097,14 @@ function AppContent() {
 }
 
 export default function App() {
+  // CHECK ROTTA PUBBLICA PRESENZE
+  const params = new URLSearchParams(window.location.search);
+  const presenzaId = params.get('presenza');
+
+  if (presenzaId) {
+      return <PublicAttendance sessionId={presenzaId} />;
+  }
+
   return (
     <ErrorBoundary>
       <InstallPWA />
