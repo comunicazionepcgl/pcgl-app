@@ -38,6 +38,28 @@ $nuove = Get-ChildItem $fotoDir -File |
     Where-Object { $_.Extension -match '^\.(jpe?g|png)$' -and $_.Name -notmatch '^\d{2}\.jpg$' } |
     Sort-Object Name
 
+# Formati non gestiti (es. .heic degli iPhone): segnalati, non toccati
+$ignorate = Get-ChildItem $fotoDir -File | Where-Object { $_.Extension -notmatch '^\.(jpe?g|png|txt)$' }
+foreach ($x in $ignorate) { Write-Warning "Ignorata $($x.Name): formato $($x.Extension) non gestito. Convertila in JPG (es. aprila con Foto di Windows > Salva con nome .jpg) e rilancia." }
+
+# Doppioni: stessa foto già elaborata (confronto sul contenuto, non sul nome)
+$doppioniDir = Join-Path $origDir 'doppioni'
+$giaViste = @{}
+Get-ChildItem $origDir -File -ErrorAction SilentlyContinue | ForEach-Object { $giaViste[(Get-FileHash $_.FullName -Algorithm SHA256).Hash] = $_.Name }
+$daElaborare = @()
+foreach ($f in $nuove) {
+    $h = (Get-FileHash $f.FullName -Algorithm SHA256).Hash
+    if ($giaViste.ContainsKey($h)) {
+        New-Item -ItemType Directory -Force $doppioniDir | Out-Null
+        Move-Item -LiteralPath $f.FullName -Destination (Join-Path $doppioniDir $f.Name) -Force
+        Write-Host "Doppione saltato: $($f.Name) (uguale a $($giaViste[$h]))"
+    } else {
+        $giaViste[$h] = $f.Name
+        $daElaborare += $f
+    }
+}
+$nuove = $daElaborare
+
 # Controllo buchi nella numerazione esistente (la presentazione si ferma al primo numero mancante)
 $numeri = @($numerate | ForEach-Object { [int]$_.BaseName } | Sort-Object)
 for ($i = 0; $i -lt $numeri.Count; $i++) {
@@ -46,7 +68,7 @@ for ($i = 0; $i -lt $numeri.Count; $i++) {
 
 if (-not $nuove) { Write-Host "Nessuna foto nuova in $fotoDir ($($numerate.Count) già numerate)."; return }
 
-$prossimo = if ($numeri.Count) { ($numeri | Measure-Object -Maximum).Maximum + 1 } else { 1 }
+$prossimo = if ($numeri.Count) { [int](($numeri | Measure-Object -Maximum).Maximum) + 1 } else { 1 }
 if ($prossimo + $nuove.Count - 1 -gt 99) { throw "Troppe foto: la presentazione ne gestisce al massimo 99." }
 
 $jpegCodec = [System.Drawing.Imaging.ImageCodecInfo]::GetImageEncoders() | Where-Object { $_.MimeType -eq 'image/jpeg' }
