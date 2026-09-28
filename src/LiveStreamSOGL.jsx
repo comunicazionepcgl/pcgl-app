@@ -15,11 +15,13 @@ import { HeaderSub } from './SharedUI';
  *
  * Per le reti mobili con NAT restrittivo serve un relay TURN: definire VITE_TURN_URL,
  * VITE_TURN_USER e VITE_TURN_PASS (senza TURN alcune connessioni 4G/5G non partono).
+ * VITE_TURN_URL può contenere più indirizzi separati da virgola (es. UDP, TCP e TLS sulla 443,
+ * quest'ultimo passa anche dai wifi che bloccano tutto tranne HTTPS).
  */
 const ICE_SERVERS = [{ urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302'] }];
 if (import.meta.env.VITE_TURN_URL) {
   ICE_SERVERS.push({
-    urls: import.meta.env.VITE_TURN_URL,
+    urls: import.meta.env.VITE_TURN_URL.split(',').map(u => u.trim()).filter(Boolean),
     username: import.meta.env.VITE_TURN_USER,
     credential: import.meta.env.VITE_TURN_PASS,
   });
