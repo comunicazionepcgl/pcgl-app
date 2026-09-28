@@ -90,19 +90,19 @@ service firebase.storage {
     
     // 7. ALLEGATI MODULI DATI (Max 10MB)
     match /form_attachments/{formId}/{userId}/{fileName} {
-      allow read: if isSignedIn(); // Chi ha il link (dalla risposta) può vedere il file
+      allow read: if isSignedIn() && (request.auth.uid == userId || isStaff()); // gli altri aprono il file dal link salvato nella risposta
       allow write: if isSignedIn() && request.auth.uid == userId && isValidSize(10);
     }
     
     // 8. ALLEGATI CANDIDATURE MODULI OPERATIVI (Max 10MB)
     match /application_attachments/{moduleId}/{userId}/{fileName} {
-      allow read: if isSignedIn(); // Chi ha il link (Admin) può vedere il file
+      allow read: if isSignedIn() && (request.auth.uid == userId || isStaff()); // gli altri aprono il file dal link salvato nella candidatura
       allow write: if isSignedIn() && request.auth.uid == userId && isValidSize(10);
     }
     
     // 9. ALLEGATI SONDAGGI INTERNI MODULI (Max 10MB)
     match /module_form_attachments/{formId}/{userId}/{fileName} {
-      allow read: if isSignedIn();
+      allow read: if isSignedIn() && (request.auth.uid == userId || isStaff()); // gli altri aprono il file dal link salvato nella risposta
       allow write: if isSignedIn() && request.auth.uid == userId && isValidSize(10);
     }
 

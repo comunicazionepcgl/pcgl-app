@@ -1,0 +1,52 @@
+rules_version = '2';
+
+/**
+ * Demo fiera PCGL: archivio condiviso tra i telefoni dei visitatori e il muro dello stand.
+ *
+ * - Nessun login: chiunque conosca l'id di sessione (nel link/QR della demo) può LEGGERE
+ *   gli eventi di quella sessione e AGGIUNGERNE di nuovi.
+ * - Gli eventi sono solo creabili, con campi e lunghezze validati. Nessuna modifica,
+ *   nessuna cancellazione dai client (a fine fiera si cancella tutto da terminale).
+ * - Non si memorizzano cognomi, contatti, foto né la scelta "vorrei essere ricontattato".
+ * - Tutto il resto del database è chiuso.
+ */
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function testo(v, max) {
+      return v is string && v.size() > 0 && v.size() <= max;
+    }
+
+    function valido(d) {
+      return d.keys().hasOnly(['tipo', 'nome', 'comune', 'sede', 'spec', 'numero', 'punti', 'secondi', 'lat', 'lng', 'livello', 'zona', 'stato', 'squadra', 'ts'])
+        && d.keys().hasAll(['tipo', 'ts'])
+        && d.tipo in ['badge', 'checkin', 'sos', 'rank', 'allerta']
+        && d.ts is number
+        && d.ts > request.time.toMillis() - 172800000
+        && d.ts < request.time.toMillis() + 172800000
+        && (!('nome' in d) || testo(d.nome, 30))
+        && (!('comune' in d) || testo(d.comune, 40))
+        && (!('sede' in d) || testo(d.sede, 40))
+        && (!('spec' in d) || testo(d.spec, 40))
+        && (!('numero' in d) || testo(d.numero, 24))
+        && (!('zona' in d) || testo(d.zona, 40))
+        && (!('stato' in d) || testo(d.stato, 20))
+        && (!('livello' in d) || d.livello in ['giallo', 'arancione', 'rosso'])
+        && (!('punti' in d) || (d.punti is number && d.punti >= 0 && d.punti <= 200))
+        && (!('secondi' in d) || (d.secondi is number && d.secondi >= 0 && d.secondi <= 36000))
+        && (!('squadra' in d) || (d.squadra is number && d.squadra >= 0 && d.squadra <= 20))
+        && (!('lat' in d) || (d.lat is number && d.lat > 30 && d.lat < 50))
+        && (!('lng' in d) || (d.lng is number && d.lng > 5 && d.lng < 20));
+    }
+
+    match /fiera/{sessione}/eventi/{evento} {
+      allow read: if sessione.size() >= 8 && sessione.size() <= 40;
+      allow create: if valido(request.resource.data);
+      allow update, delete: if false;
+    }
+
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

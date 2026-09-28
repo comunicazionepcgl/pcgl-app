@@ -468,14 +468,37 @@ service cloud.firestore {
     // --- 12. GESTIONE PRESENZE (QR CODE PUBBLICO) ---
     // ==========================================================================
 
-    match /registro_presenze/{docId} {
-      allow read: if true;
-      allow write: if isSignedIn();
+    // Registrazione pubblica dal QR (senza login): solo i campi del form, non validata,
+    // e solo su una sessione esistente, aperta e non in pausa.
+    function isValidPublicAttendance(data) {
+      let session = get(/databases/$(database)/documents/registro_presenze/$(data.sessionId)).data;
+      return data.keys().hasOnly(['sessionId', 'sessionTitle', 'nome', 'cognome', 'email', 'cf', 'ente', 'sede', 'timestamp', 'validato'])
+             && data.keys().hasAll(['sessionId', 'nome', 'cognome', 'email'])
+             && data.sessionId is string && data.sessionId.size() > 0 && data.sessionId.size() <= 64
+             && exists(/databases/$(database)/documents/registro_presenze/$(data.sessionId))
+             && session.get('isClosed', false) != true
+             && session.get('isPaused', false) != true
+             && data.validato == false
+             && data.nome is string && data.nome.size() > 0 && data.nome.size() <= 60
+             && data.cognome is string && data.cognome.size() > 0 && data.cognome.size() <= 60
+             && data.email is string && data.email.size() > 3 && data.email.size() <= 120
+             && data.get('cf', '') is string && data.get('cf', '').size() <= 20
+             && data.get('ente', '') is string && data.get('ente', '').size() <= 60
+             && data.get('sede', '') is string && data.get('sede', '').size() <= 60
+             && data.get('sessionTitle', '') is string && data.get('sessionTitle', '').size() <= 200
+             && data.get('timestamp', '') is string && data.get('timestamp', '').size() <= 40;
     }
-    
+
+    match /registro_presenze/{docId} {
+      // La pagina pubblica del QR legge la singola sessione per ID
+      allow get: if true;
+      allow list: if isCoordinamento();
+      allow create, update, delete: if isCoordinamento();
+    }
+
     match /presenze_registrate/{docId} {
-      allow create: if true; 
-      allow read, update, delete: if isSignedIn();
+      allow create: if isCoordinamento() || isValidPublicAttendance(request.resource.data);
+      allow read, update, delete: if isCoordinamento();
     }
 
     match /telegram_uploads/{docId} {
