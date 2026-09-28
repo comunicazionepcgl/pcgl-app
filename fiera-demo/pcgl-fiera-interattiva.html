@@ -2268,7 +2268,11 @@
   /* ---------- modalita' chiosco (tablet dello stand): attiva solo con ?kiosk=1 ----------
      Dopo 75 secondi senza tocchi chiede "Sei ancora qui?"; se nessuno risponde entro 10 secondi
      ricarica la demo da capo, così il visitatore successivo non trova tesserino, foto o allerta
-     del precedente. Non interviene sulla vista del muro (?view=wall), che resta sempre accesa. */
+     del precedente. Non interviene sulla vista del muro (?view=wall), che resta sempre accesa.
+     Presentazione foto: sulla schermata iniziale, dopo 20 secondi senza tocchi, scorrono a schermo
+     intero le foto della cartella foto/ accanto a questa pagina, chiamate 01.jpg, 02.jpg, 03.jpg...
+     (in ordine, fino a 99: la ricerca si ferma alla prima che manca). Didascalie facoltative in
+     foto/didascalie.txt, una riga per foto nello stesso ordine. Un tocco chiude la presentazione. */
   (function(){
     var params = new URLSearchParams(location.search);
     if(params.get("kiosk") !== "1") return;
@@ -2288,6 +2292,73 @@
       '</div>';
     document.body.appendChild(overlay);
     var leftEl = document.getElementById("kioskLeft");
+
+    var ATTRACT_MS = 20000, SLIDE_MS = 7000, FOTO_DIR = "foto/";
+    var slides = null, slideIdx = 0, slideTimer = null, front = 0;
+    var show = document.createElement("div");
+    show.id = "kioskShow";
+    show.setAttribute("role", "button");
+    show.setAttribute("aria-label", "Tocca per provare la demo PCGL");
+    show.style.cssText = "position:fixed;inset:0;z-index:9998;background:#001a33;display:none;overflow:hidden;cursor:pointer;";
+    var logoSrc = (document.getElementById("pcglLogoMaster") || {}).src || "";
+    show.innerHTML =
+      '<img class="kf" alt="" style="position:absolute;inset:0;width:100%;height:100%;object-fit:cover;opacity:0;transition:opacity 1.4s ease, transform 8s linear;transform:scale(1.06)">' +
+      '<img class="kf" alt="" style="position:absolute;inset:0;width:100%;height:100%;object-fit:cover;opacity:0;transition:opacity 1.4s ease, transform 8s linear;transform:scale(1.06)">' +
+      '<div style="position:absolute;left:0;right:0;bottom:0;padding:6rem 1.5rem 1.8rem;background:linear-gradient(to top,rgba(0,26,51,.95),rgba(0,26,51,0));color:#fff;text-align:center">' +
+        '<div id="kioskCap" style="font-weight:800;font-size:1.15rem;line-height:1.3;min-height:1.3em;text-shadow:0 2px 8px rgba(0,0,0,.4)"></div>' +
+        '<div style="margin-top:1.1rem;display:inline-flex;align-items:center;gap:.7rem;background:#FFCC00;color:#003366;border-radius:999px;padding:.8rem 1.4rem;font-weight:900;text-transform:uppercase;letter-spacing:.04em;font-size:.95rem">' +
+          (logoSrc ? '<img src="' + logoSrc + '" alt="" style="width:28px;height:28px;object-fit:contain">' : '') +
+          'Tocca lo schermo per provare la demo' +
+        '</div>' +
+      '</div>';
+    document.body.appendChild(show);
+    var layers = show.querySelectorAll(".kf");
+    var capEl = document.getElementById("kioskCap");
+
+    function findSlides(cb){
+      if(slides) return cb(slides);
+      var list = [], caps = [];
+      var go = function(t){ caps = String(t || "").split(/\r?\n/); probe(1); };
+      if(window.fetch) fetch(FOTO_DIR + "didascalie.txt").then(function(r){ return r.ok ? r.text() : ""; }).then(go, function(){ go(""); });
+      else go("");
+      function probe(n){
+        if(n > 99) return done();
+        var src = FOTO_DIR + (n < 10 ? "0" : "") + n + ".jpg";
+        var im = new Image();
+        im.onload = function(){ list.push({ src: src, cap: (caps[n - 1] || "").trim() }); probe(n + 1); };
+        im.onerror = done;
+        im.src = src;
+      }
+      function done(){ slides = list; cb(slides); }
+    }
+    function paint(){
+      var cur = layers[front], next = layers[1 - front];
+      next.src = slides[slideIdx].src;
+      next.style.transition = "none"; next.style.transform = "scale(1.06)";
+      void next.offsetWidth; // riparte l'effetto di zoom lento
+      next.style.transition = "opacity 1.4s ease, transform " + (SLIDE_MS + 1500) + "ms linear";
+      next.style.opacity = "1"; next.style.transform = "scale(1)";
+      cur.style.opacity = "0";
+      capEl.textContent = slides[slideIdx].cap;
+      front = 1 - front;
+    }
+    function isShowing(){ return show.style.display === "block"; }
+    function startShow(){
+      findSlides(function(list){
+        if(!list.length || currentView() !== "modeselect" || isOpen() || isShowing()) return;
+        slideIdx = 0;
+        show.style.display = "block";
+        paint();
+        clearInterval(slideTimer);
+        if(list.length > 1) slideTimer = setInterval(function(){ slideIdx = (slideIdx + 1) % list.length; paint(); }, SLIDE_MS);
+      });
+    }
+    function stopShow(){
+      show.style.display = "none";
+      clearInterval(slideTimer);
+    }
+    show.addEventListener("click", function(){ stopShow(); arm(); });
+    findSlides(function(){}); // precarica le foto mentre la demo è in uso
 
     function currentView(){ return new URLSearchParams(location.search).get("view") || "home"; }
     function isOpen(){ return overlay.style.display === "flex"; }
@@ -2320,7 +2391,11 @@
     function arm(){
       clearTimeout(idleTimer);
       var v = currentView();
-      if(v === "wall" || v === "modeselect") return; // il muro resta acceso; la scelta iniziale è già "pulita"
+      if(v === "wall") return; // il muro resta sempre acceso
+      if(v === "modeselect"){ // schermata iniziale già "pulita": dopo un po' partono le foto
+        if(!isShowing()) idleTimer = setTimeout(startShow, ATTRACT_MS);
+        return;
+      }
       idleTimer = setTimeout(showOverlay, IDLE_MS);
     }
     function activity(){
