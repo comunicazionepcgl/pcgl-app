@@ -370,8 +370,14 @@ exports.onAlertCreated = onDocumentCreated("attivazioni/{alertId}", async (event
             });
         }
 
+        // Le allerte della sola SEDE TEST FITTIZIA (prove, dimostrazioni in fiera) non vanno sul canale pubblico
+        if (targetZones.length > 0 && targetZones.every(z => z === 'SEDE TEST FITTIZIA')) {
+            logger.info(`Allerta di test "${alertData.titolo}": nessun invio al canale Telegram.`);
+            return;
+        }
+
         // Invia al Canale Telegram
-        const alertTime = new Intl.DateTimeFormat('it-IT', { timeZone: 'Europe/Rome', day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' }).format(new Date(alertData.dataAttivazione));
+        const alertTime =new Intl.DateTimeFormat('it-IT', { timeZone: 'Europe/Rome', day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' }).format(new Date(alertData.dataAttivazione));
         const escapeHtml = (text) => (text || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
         const channelText = `🚨 <b>ALLERTA ${color.toUpperCase()}</b>\n\n<b>${escapeHtml(alertData.titolo)}</b>\n⏰ Attivazione: ${alertTime}\n📍 Zone interessate: ${escapeHtml(targetZones.join(', '))}\n${alertData.dettagli ? '\n📝 Dettagli: ' + escapeHtml(alertData.dettagli) : ''}`;
         
@@ -575,6 +581,43 @@ exports.resyncPublicProfiles = onSchedule({ schedule: "every day 03:30", timeZon
         logger.info(`Profili pubblici: ${usersSnap.size} utenti, ${scritti} aggiornati, ${rimossi} rimossi.`);
     } catch (error) {
         logger.error("Errore durante resyncPublicProfiles:", error);
+    }
+});
+
+/**
+ * CRON JOB: Numeri pubblici di PCGL (solo totali anonimi, nessun dato personale).
+ * Letti senza login dalla demo della fiera e da siti esterni: statistiche_pubbliche/pcgl.
+ */
+exports.updatePublicStats = onSchedule({ schedule: "every 2 hours", timeZone: "Europe/Rome", memory: "512MiB", timeoutSeconds: 300 }, async () => {
+    const db = admin.firestore();
+    try {
+        const anno = new Date().getFullYear();
+        const inizioAnno = `${anno}-01-01T00:00:00.000Z`;
+        const TEST = 'SEDE TEST FITTIZIA';
+        const [attiviSnap, mezziSnap, aibSnap, allerteSnap] = await Promise.all([
+            db.collection('users').where('stato', '==', 'attivo').select('sede').get(),
+            db.collection('mezzi').select('sede').get(),
+            db.collection('aib_interventi').where('timestamp', '>=', inizioAnno).select('sedeRichiedente').get(),
+            db.collection('attivazioni').where('dataAttivazione', '>=', inizioAnno).select('zone').get()
+        ]);
+        // La sede di test (prove, dimostrazioni in fiera) non entra nei numeri pubblici
+        const sedeDi = d => String(d.get('sede') || '').trim().toUpperCase();
+        const attivi = attiviSnap.docs.filter(d => sedeDi(d) !== TEST);
+        const sedi = new Set(attivi.map(sedeDi).filter(Boolean));
+        const soloTest = z => { const zs = Array.isArray(z) ? z : [z]; return zs.length > 0 && zs.every(x => x === TEST); };
+        const stats = {
+            volontariAttivi: attivi.length,
+            sediAttive: sedi.size,
+            mezzi: mezziSnap.docs.filter(d => sedeDi(d) !== TEST).length,
+            interventiAibAnno: aibSnap.docs.filter(d => d.get('sedeRichiedente') !== TEST).length,
+            allerteAnno: allerteSnap.docs.filter(d => !soloTest(d.get('zone'))).length,
+            anno,
+            aggiornatoIl: new Date().toISOString()
+        };
+        await db.collection('statistiche_pubbliche').doc('pcgl').set(stats);
+        logger.info("Statistiche pubbliche aggiornate", stats);
+    } catch (error) {
+        logger.error("Errore durante updatePublicStats:", error);
     }
 });
 

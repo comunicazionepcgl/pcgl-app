@@ -524,6 +524,12 @@ service cloud.firestore {
 
     // Statistiche precalcolate dalle Cloud Functions (es. classifica volontari).
     // Leggibili da chi vede la pagina Statistiche; scritte solo dal backend.
+    // Totali anonimi (volontari attivi, sedi, mezzi, interventi): pubblici, scritti solo dal backend.
+    match /statistiche_pubbliche/{docId} {
+      allow read: if true;
+      allow write: if false;
+    }
+
     match /statistiche/{docId} {
       allow read: if isSignedIn() && isPresidente();
       allow write: if false;

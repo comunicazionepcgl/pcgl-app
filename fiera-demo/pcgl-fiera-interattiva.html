@@ -272,7 +272,7 @@
         <div class="flex flex-col gap-2" id="feedList"></div>
       </div>
 
-      <p class="text-xs text-gray-400 border-t border-gray-100 pt-4 leading-relaxed">I contatori &laquo;Volontari Attivi&raquo; e &laquo;Mezzi in Rete&raquo; e la mappa sono dati dimostrativi. Tesserini e check-in mostrati sopra sono invece generati realmente dai visitatori di questa postazione.</p>
+      <p id="salaopNote" class="text-xs text-gray-400 border-t border-gray-100 pt-4 leading-relaxed">I contatori &laquo;Volontari Attivi&raquo; e &laquo;Mezzi in Rete&raquo; e la mappa sono dati dimostrativi. Tesserini e check-in mostrati sopra sono invece generati realmente dai visitatori di questa postazione.</p>
     </main>
   </section>
 
@@ -720,6 +720,7 @@
     currentBadge: null,
     simVolontari: 186,
     simMezzi: 14,
+    real: null,
     allerta: loadValue(LS_ALLERTA),
     queue: loadList(LS_QUEUE),
     sos: loadList(LS_SOS),
@@ -1063,14 +1064,44 @@
     document.getElementById("checkinForm").reset();
   });
 
+  /* ---------- numeri reali PCGL (totali anonimi, aggiornati ogni 2 ore dall'app) ----------
+     Documento pubblico statistiche_pubbliche/pcgl del progetto pcgl-volontari: nessun dato
+     personale. Senza rete la demo continua con i contatori dimostrativi. */
+  var REAL_STATS_URL = "https://firestore.googleapis.com/v1/projects/pcgl-volontari/databases/(default)/documents/statistiche_pubbliche/pcgl?key=AIzaSyCTy06UxO-WIscvmkexn18W0Pbu1ge15Co";
+  function loadRealStats(){
+    if(!window.fetch) return;
+    fetch(REAL_STATS_URL).then(function(r){ return r.ok ? r.json() : null; }).then(function(doc){
+      if(!doc || !doc.fields) return;
+      function num(k){ var f = doc.fields[k]; return f ? Number(f.integerValue || f.doubleValue || 0) : 0; }
+      state.real = {
+        volontariAttivi: num("volontariAttivi"), sediAttive: num("sediAttive"), mezzi: num("mezzi"),
+        allerteAnno: num("allerteAnno"), interventiAibAnno: num("interventiAibAnno"), anno: num("anno") || new Date().getFullYear()
+      };
+      var note = document.getElementById("salaopNote");
+      if(note) note.innerHTML = "Volontari attivi, mezzi, sedi e interventi sono i <strong>numeri reali</strong> dell'app PCGL (aggiornati ogni 2 ore, solo totali anonimi). La mappa è dimostrativa. Tesserini e check-in sono generati dai visitatori di questa postazione.";
+      if(!document.getElementById("view-salaop").hidden) renderSalaOp();
+    }).catch(function(){ /* offline: restano i contatori dimostrativi */ });
+  }
+  function fmtNum(n){ return String(Math.round(Number(n) || 0)).replace(/\B(?=(\d{3})+(?!\d))/g, "."); }
+  loadRealStats();
+  setInterval(loadRealStats, 10 * 60 * 1000);
+
   /* ---------- sala operativa: contatori + feed ---------- */
   function renderSalaOp(){
     var grid = document.getElementById("statGrid");
     grid.innerHTML =
       statTile(state.badges.length, "Tesserini Generati", "Dato Reale", "text-pcgl-blue") +
       statTile(state.checkins.length, "Check-in Fiera", "Dato Reale", "text-pcgl-blue") +
-      statTile(state.simVolontari, "Volontari Attivi PCGL", "Dimostrativo", "text-gray-400") +
-      statTile(state.simMezzi, "Mezzi in Rete", "Dimostrativo", "text-gray-400");
+      (state.real
+        ? statTile(fmtNum(state.real.volontariAttivi), "Volontari Attivi PCGL", "Dato Reale", "text-pcgl-blue") +
+          statTile(fmtNum(state.real.mezzi), "Mezzi in Rete", "Dato Reale", "text-pcgl-blue") +
+          '<div class="col-span-2 sm:col-span-4 bg-pcgl-blue text-white rounded-2xl px-4 py-3 text-xs font-bold uppercase tracking-widest flex flex-wrap gap-x-4 gap-y-1 justify-center">' +
+            '<span><span class="text-pcgl-yellow text-base font-black">' + fmtNum(state.real.sediAttive) + '</span> sedi operative</span>' +
+            '<span><span class="text-pcgl-yellow text-base font-black">' + fmtNum(state.real.allerteAnno) + '</span> allerte nel ' + state.real.anno + '</span>' +
+            '<span><span class="text-pcgl-yellow text-base font-black">' + fmtNum(state.real.interventiAibAnno) + '</span> interventi AIB</span>' +
+          '</div>'
+        : statTile(state.simVolontari, "Volontari Attivi PCGL", "Dimostrativo", "text-gray-400") +
+          statTile(state.simMezzi, "Mezzi in Rete", "Dimostrativo", "text-gray-400"));
 
     var feed = document.getElementById("feedList");
     var items = state.badges.map(function(b){
@@ -1104,6 +1135,7 @@
   }
 
   setInterval(function(){
+    if(state.real) return;
     state.simVolontari += Math.round(Math.random()*3 - 1);
     if(state.simVolontari < 150) state.simVolontari = 150;
     if(!document.getElementById("view-salaop").hidden) renderSalaOp();
@@ -1858,7 +1890,9 @@
     }
     document.getElementById("wallStats").innerHTML =
       tile(wd.badges.length, "Tesserini", "Dato reale") + tile(wd.checkins.length, "Check-in", "Dato reale") +
-      tile(state.simVolontari, "Volontari attivi", "Dimostrativo") + tile(state.simMezzi, "Mezzi in rete", "Dimostrativo");
+      (state.real
+        ? tile(fmtNum(state.real.volontariAttivi), "Volontari attivi", "Dato reale PCGL") + tile(fmtNum(state.real.mezzi), "Mezzi in rete", "Dato reale PCGL")
+        : tile(state.simVolontari, "Volontari attivi", "Dimostrativo") + tile(state.simMezzi, "Mezzi in rete", "Dimostrativo"));
     var items = activityItems().slice(0, 9);
     document.getElementById("wallFeed").innerHTML = items.length ? items.map(function(it){
       var color = it.type === "badge" ? "bg-pcgl-yellow" : (it.type === "sos" ? "bg-red-500" : "bg-green-400");
@@ -2230,6 +2264,78 @@
     };
   }
   cloudInit();
+
+  /* ---------- modalita' chiosco (tablet dello stand): attiva solo con ?kiosk=1 ----------
+     Dopo 75 secondi senza tocchi chiede "Sei ancora qui?"; se nessuno risponde entro 10 secondi
+     ricarica la demo da capo, così il visitatore successivo non trova tesserino, foto o allerta
+     del precedente. Non interviene sulla vista del muro (?view=wall), che resta sempre accesa. */
+  (function(){
+    var params = new URLSearchParams(location.search);
+    if(params.get("kiosk") !== "1") return;
+    var IDLE_MS = 75000, COUNTDOWN = 10;
+    var idleTimer = null, countdownTimer = null, left = 0;
+
+    var overlay = document.createElement("div");
+    overlay.setAttribute("role", "dialog");
+    overlay.setAttribute("aria-modal", "true");
+    overlay.setAttribute("aria-labelledby", "kioskTitle");
+    overlay.style.cssText = "position:fixed;inset:0;z-index:9999;background:rgba(0,34,77,.88);display:none;align-items:center;justify-content:center;padding:1.5rem;";
+    overlay.innerHTML =
+      '<div style="background:#fff;border-radius:2rem;padding:2rem;max-width:22rem;width:100%;text-align:center;box-shadow:0 30px 60px rgba(0,0,0,.35)">' +
+        '<div id="kioskTitle" style="font-weight:900;font-style:italic;text-transform:uppercase;color:#003366;font-size:1.5rem;line-height:1.1">Sei ancora qui?</div>' +
+        '<p style="color:#6b7280;font-size:.9rem;margin:.7rem 0 1.3rem;line-height:1.5">Tra <strong id="kioskLeft" style="color:#003366">' + COUNTDOWN + '</strong> secondi la demo ricomincia da capo per il prossimo visitatore.</p>' +
+        '<button type="button" id="kioskStay" style="width:100%;padding:1rem;border-radius:1rem;background:#003366;color:#FFCC00;font-weight:900;text-transform:uppercase;letter-spacing:.04em;border:0;font-size:1rem">Continua</button>' +
+      '</div>';
+    document.body.appendChild(overlay);
+    var leftEl = document.getElementById("kioskLeft");
+
+    function currentView(){ return new URLSearchParams(location.search).get("view") || "home"; }
+    function isOpen(){ return overlay.style.display === "flex"; }
+
+    function resetDemo(){
+      saveValue(LS_MODE, null);
+      saveValue(LS_ALLERTA, null);
+      var next = new URLSearchParams();
+      next.set("kiosk", "1");
+      next.set("view", "modeselect");
+      if(params.get("s")) next.set("s", params.get("s"));
+      location.replace(location.pathname + "?" + next.toString());
+    }
+    function hideOverlay(){
+      overlay.style.display = "none";
+      clearInterval(countdownTimer);
+    }
+    function showOverlay(){
+      left = COUNTDOWN;
+      leftEl.textContent = left;
+      overlay.style.display = "flex";
+      document.getElementById("kioskStay").focus();
+      clearInterval(countdownTimer);
+      countdownTimer = setInterval(function(){
+        left--;
+        leftEl.textContent = left;
+        if(left <= 0){ clearInterval(countdownTimer); resetDemo(); }
+      }, 1000);
+    }
+    function arm(){
+      clearTimeout(idleTimer);
+      var v = currentView();
+      if(v === "wall" || v === "modeselect") return; // il muro resta acceso; la scelta iniziale è già "pulita"
+      idleTimer = setTimeout(showOverlay, IDLE_MS);
+    }
+    function activity(){
+      if(isOpen()) return;
+      // la vista cambia dopo il click: si riarma al giro successivo
+      setTimeout(arm, 0);
+    }
+
+    ["pointerdown", "keydown", "wheel", "touchstart"].forEach(function(ev){
+      document.addEventListener(ev, activity, { passive: true, capture: true });
+    });
+    // Un tocco ovunque sulla finestra equivale a "Continua"
+    overlay.addEventListener("click", function(){ hideOverlay(); arm(); });
+    arm();
+  })();
 
   /* ---------- initial route ---------- */
   renderOffline();
