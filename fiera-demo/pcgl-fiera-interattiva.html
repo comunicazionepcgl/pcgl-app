@@ -2287,9 +2287,11 @@
      ricarica la demo da capo, così il visitatore successivo non trova tesserino, foto o allerta
      del precedente. Non interviene sulla vista del muro (?view=wall), che resta sempre accesa.
      Presentazione foto: sulla schermata iniziale, dopo 20 secondi senza tocchi, scorrono a schermo
-     intero le foto della cartella foto/ accanto a questa pagina, chiamate 01.jpg, 02.jpg, 03.jpg...
-     (in ordine, fino a 99: la ricerca si ferma alla prima che manca). Didascalie facoltative in
-     foto/didascalie.txt, una riga per foto nello stesso ordine. Un tocco chiude la presentazione. */
+     intero, in ordine casuale, le foto della cartella foto/ accanto a questa pagina, chiamate
+     01.jpg, 02.jpg ... 99.jpg, 100.jpg ... Il numero totale è in foto/totale.txt (lo scrive
+     prepara-foto.ps1); senza quel file cerca 01.jpg, 02.jpg... fino alla prima che manca (max 99).
+     Viene scaricata solo la foto successiva, non tutte. Didascalie facoltative in foto/didascalie.txt,
+     una riga per foto (riga 1 = 01.jpg). Un tocco o un movimento del mouse chiude la presentazione. */
   (function(){
     var params = new URLSearchParams(location.search);
     if(params.get("kiosk") !== "1") return;
@@ -2332,43 +2334,87 @@
     var layers = show.querySelectorAll(".kf");
     var capEl = document.getElementById("kioskCap");
 
+    function nomeFoto(n){ return FOTO_DIR + (n < 10 ? "0" : "") + n + ".jpg"; }
+    // Elenco delle foto (senza scaricarle): da foto/totale.txt, oppure cercandole una per una (max 99)
     function findSlides(cb){
       if(slides) return cb(slides);
-      var list = [], caps = [];
-      var go = function(t){ caps = String(t || "").split(/\r?\n/); probe(1); };
-      if(window.fetch) fetch(FOTO_DIR + "didascalie.txt").then(function(r){ return r.ok ? r.text() : ""; }).then(go, function(){ go(""); });
-      else go("");
-      function probe(n){
-        if(n > 99) return done();
-        var src = FOTO_DIR + (n < 10 ? "0" : "") + n + ".jpg";
-        var im = new Image();
-        im.onload = function(){ list.push({ src: src, cap: (caps[n - 1] || "").trim() }); probe(n + 1); };
-        im.onerror = done;
-        im.src = src;
+      var caps = [];
+      function build(n){
+        slides = [];
+        for(var i = 1; i <= n; i++) slides.push({ src: nomeFoto(i), cap: (caps[i - 1] || "").trim() });
+        cb(slides);
       }
-      function done(){ slides = list; cb(slides); }
+      function probe(){
+        var n = 0;
+        (function next(){
+          if(n >= 99) return build(n);
+          var im = new Image();
+          im.onload = function(){ n++; next(); };
+          im.onerror = function(){ build(n); };
+          im.src = nomeFoto(n + 1);
+        })();
+      }
+      function text(url){
+        return window.fetch ? fetch(url, { cache: "no-store" }).then(function(r){ return r.ok ? r.text() : ""; }, function(){ return ""; }) : Promise.resolve("");
+      }
+      Promise.all([text(FOTO_DIR + "didascalie.txt"), text(FOTO_DIR + "totale.txt")]).then(function(res){
+        caps = String(res[0] || "").split(/\r?\n/);
+        var tot = parseInt(String(res[1] || "").trim(), 10);
+        if(tot > 0 && tot < 10000) build(tot); else probe();
+      });
     }
-    function paint(){
+    // Ordine casuale, ricalcolato a ogni giro completo
+    var order = [], orderPos = 0;
+    function shuffle(){
+      order = slides.map(function(_, i){ return i; });
+      for(var i = order.length - 1; i > 0; i--){ var j = Math.floor(Math.random() * (i + 1)); var t = order[i]; order[i] = order[j]; order[j] = t; }
+      orderPos = 0;
+    }
+    function nextSlide(){
+      if(orderPos >= order.length) shuffle();
+      return slides[order[orderPos++]];
+    }
+    // Scarica la prossima foto valida (salta quelle mancanti) e la passa a cb
+    var preloaded = null;
+    function loadNext(cb, tentativi){
+      tentativi = tentativi || 0;
+      if(tentativi > 20) return; // troppe foto mancanti di fila: si ferma
+      var sl = nextSlide(), im = new Image();
+      im.onload = function(){ cb(sl); };
+      im.onerror = function(){ loadNext(cb, tentativi + 1); };
+      im.src = sl.src;
+    }
+    function paint(sl){
       var cur = layers[front], next = layers[1 - front];
-      next.src = slides[slideIdx].src;
+      next.src = sl.src;
       next.style.transition = "none"; next.style.transform = "scale(1.06)";
       void next.offsetWidth; // riparte l'effetto di zoom lento
       next.style.transition = "opacity 1.4s ease, transform " + (SLIDE_MS + 1500) + "ms linear";
       next.style.opacity = "1"; next.style.transform = "scale(1)";
       cur.style.opacity = "0";
-      capEl.textContent = slides[slideIdx].cap;
+      capEl.textContent = sl.cap;
       front = 1 - front;
+      preloaded = null;
+      loadNext(function(p){ preloaded = p; }); // prepara la successiva mentre questa è a schermo
+    }
+    function advance(){
+      if(!isShowing()) return;
+      if(preloaded) paint(preloaded);
+      else loadNext(function(p){ if(isShowing()) paint(p); });
     }
     function isShowing(){ return show.style.display === "block"; }
     function startShow(){
       findSlides(function(list){
         if(!list.length || currentView() !== "modeselect" || isOpen() || isShowing()) return;
-        slideIdx = 0;
+        if(!order.length) shuffle();
         moveStart = null;
-        show.style.display = "block";
-        paint();
-        clearInterval(slideTimer);
-        if(list.length > 1) slideTimer = setInterval(function(){ slideIdx = (slideIdx + 1) % list.length; paint(); }, SLIDE_MS);
+        loadNext(function(first){
+          if(currentView() !== "modeselect" || isOpen() || isShowing()) return;
+          show.style.display = "block";
+          paint(first);
+          clearInterval(slideTimer);
+          if(list.length > 1) slideTimer = setInterval(advance, SLIDE_MS);
+        });
       });
     }
     function stopShow(){

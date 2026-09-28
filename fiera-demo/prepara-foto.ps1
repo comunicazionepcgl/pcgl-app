@@ -5,14 +5,17 @@
 # dalla cartella fiera-demo. Si può rilanciare ogni volta che si aggiungono foto.
 #
 # Cosa fa:
-# - numera le foto nuove DOPO quelle già numerate (01.jpg, 02.jpg, ...), in ordine di nome
+# - numera le foto nuove DOPO quelle già numerate (01.jpg ... 99.jpg, 100.jpg ...), in ordine di nome
 #   (per le foto di WhatsApp coincide con l'ordine di scatto);
 # - le raddrizza se il telefono le ha salvate ruotate e le riduce a max 1920 px (JPEG);
 # - sposta gli originali in foto-originali\ (da NON caricare sul sito);
 # - aggiorna foto\elenco-foto.txt (numero <- nome originale) per scrivere le didascalie;
 # - aggiunge righe vuote a foto\didascalie.txt, così l'ordine delle didascalie resta allineato.
 #
-# Sul sito va caricata solo la cartella foto\ (senza elenco-foto.txt, che non serve).
+# - scrive foto\totale.txt con il numero delle foto (la presentazione le mostra in ordine casuale);
+# - salta i doppioni (stessa foto con nome diverso) e segnala i formati non gestiti (es. .heic).
+#
+# Sul sito vanno caricati: le foto nuove, totale.txt e didascalie.txt (elenco-foto.txt non serve).
 
 param(
     [int]$LatoMassimo = 1920,
@@ -33,9 +36,9 @@ if (-not (Test-Path $fotoDir)) { throw "Cartella non trovata: $fotoDir" }
 New-Item -ItemType Directory -Force $origDir | Out-Null
 
 # Foto già numerate e foto nuove
-$numerate = Get-ChildItem $fotoDir -File | Where-Object { $_.Name -match '^\d{2}\.jpg$' }
+$numerate = Get-ChildItem $fotoDir -File | Where-Object { $_.Name -match '^\d{2,3}\.jpg$' }
 $nuove = Get-ChildItem $fotoDir -File |
-    Where-Object { $_.Extension -match '^\.(jpe?g|png)$' -and $_.Name -notmatch '^\d{2}\.jpg$' } |
+    Where-Object { $_.Extension -match '^\.(jpe?g|png)$' -and $_.Name -notmatch '^\d{2,3}\.jpg$' } |
     Sort-Object Name
 
 # Formati non gestiti (es. .heic degli iPhone): segnalati, non toccati
@@ -66,10 +69,10 @@ for ($i = 0; $i -lt $numeri.Count; $i++) {
     if ($numeri[$i] -ne $i + 1) { Write-Warning "Manca la foto $('{0:D2}' -f ($i + 1)).jpg: le foto successive non verrebbero mostrate. Rinomina a mano per chiudere il buco." ; break }
 }
 
-if (-not $nuove) { Write-Host "Nessuna foto nuova in $fotoDir ($($numerate.Count) già numerate)."; return }
+if (-not $nuove) { [IO.File]::WriteAllText((Join-Path $fotoDir 'totale.txt'), [string]$numerate.Count, $utf8); Write-Host "Nessuna foto nuova in $fotoDir ($($numerate.Count) già numerate; totale.txt aggiornato)."; return }
 
 $prossimo = if ($numeri.Count) { [int](($numeri | Measure-Object -Maximum).Maximum) + 1 } else { 1 }
-if ($prossimo + $nuove.Count - 1 -gt 99) { throw "Troppe foto: la presentazione ne gestisce al massimo 99." }
+if ($prossimo + $nuove.Count - 1 -gt 999) { throw "Troppe foto: la presentazione ne gestisce al massimo 999." }
 
 $jpegCodec = [System.Drawing.Imaging.ImageCodecInfo]::GetImageEncoders() | Where-Object { $_.MimeType -eq 'image/jpeg' }
 $encParams = New-Object System.Drawing.Imaging.EncoderParameters 1
@@ -113,6 +116,8 @@ foreach ($f in $nuove) {
 # Didascalie: una riga per foto; aggiunge righe vuote per le nuove foto
 $righeDid = if (Test-Path $didascalie) { [IO.File]::ReadAllLines($didascalie, $utf8) } else { @() }
 $totale = $prossimo - 1
+# La presentazione legge qui il numero delle foto (non deve cercarle una per una)
+[IO.File]::WriteAllText((Join-Path $fotoDir 'totale.txt'), [string]$totale, $utf8)
 if ($righeDid.Count -lt $totale) {
     $righeDid = @($righeDid) + @('') * ($totale - $righeDid.Count)
     [IO.File]::WriteAllLines($didascalie, [string[]]$righeDid, $utf8)
