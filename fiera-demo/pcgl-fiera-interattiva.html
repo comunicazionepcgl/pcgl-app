@@ -2433,6 +2433,26 @@
         stopShow(); arm();
       }
     });
+    // Avvio manuale delle foto: pulsantino quasi invisibile in basso a sinistra (solo sulla
+    // schermata iniziale del chiosco) oppure tasto P della tastiera.
+    var startBtn = document.createElement("button");
+    startBtn.type = "button";
+    startBtn.id = "kioskStartShow";
+    startBtn.setAttribute("aria-label", "Avvia la presentazione delle foto");
+    startBtn.title = "Avvia foto";
+    startBtn.style.cssText = "position:fixed;left:10px;bottom:10px;z-index:9997;width:44px;height:44px;border-radius:999px;border:0;background:#003366;opacity:.07;cursor:pointer;display:none;";
+    startBtn.addEventListener("click", function(e){ e.stopPropagation(); clearTimeout(idleTimer); startShow(); });
+    document.body.appendChild(startBtn);
+    function syncStartBtn(){ startBtn.style.display = (currentView() === "modeselect" && !isShowing()) ? "block" : "none"; }
+    setInterval(syncStartBtn, 500);
+    syncStartBtn();
+    document.addEventListener("keydown", function(e){
+      if((e.key === "p" || e.key === "P") && currentView() === "modeselect" && !isShowing() && !isOpen()
+         && !/^(INPUT|TEXTAREA|SELECT)$/.test((document.activeElement || {}).tagName || "")){
+        clearTimeout(idleTimer); startShow();
+      }
+    });
+
     if(currentView() !== "wall") findSlides(function(){}); // precarica le foto mentre la demo è in uso
 
     function currentView(){ return new URLSearchParams(location.search).get("view") || "home"; }
