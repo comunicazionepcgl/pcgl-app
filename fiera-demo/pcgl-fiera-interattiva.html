@@ -2347,6 +2347,7 @@
       findSlides(function(list){
         if(!list.length || currentView() !== "modeselect" || isOpen() || isShowing()) return;
         slideIdx = 0;
+        moveStart = null;
         show.style.display = "block";
         paint();
         clearInterval(slideTimer);
@@ -2358,6 +2359,17 @@
       clearInterval(slideTimer);
     }
     show.addEventListener("click", function(){ stopShow(); arm(); });
+    // Anche muovere il mouse chiude le foto e mostra la scelta del profilo.
+    // Soglia di qualche pixel: una vibrazione del tavolo non deve interrompere la presentazione.
+    var MOVE_PX = 15, moveStart = null;
+    show.addEventListener("pointermove", function(e){
+      if(e.pointerType && e.pointerType !== "mouse" && e.pointerType !== "pen") return;
+      if(!moveStart){ moveStart = { x: e.clientX, y: e.clientY }; return; }
+      if(Math.abs(e.clientX - moveStart.x) + Math.abs(e.clientY - moveStart.y) >= MOVE_PX){
+        moveStart = null;
+        stopShow(); arm();
+      }
+    });
     findSlides(function(){}); // precarica le foto mentre la demo è in uso
 
     function currentView(){ return new URLSearchParams(location.search).get("view") || "home"; }
