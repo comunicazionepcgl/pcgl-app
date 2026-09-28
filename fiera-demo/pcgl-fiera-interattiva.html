@@ -551,6 +551,12 @@
       <div class="col-span-5 rounded-3xl overflow-hidden border border-white/10 relative bg-black/30">
         <div id="wallMap" class="w-full h-full"></div>
         <div class="absolute top-3 left-3 z-[500] bg-pcgl-blue/90 text-white px-3 py-1.5 rounded-xl text-[10px] font-black uppercase tracking-widest">Squadre e operazioni &middot; dati dimostrativi</div>
+        <div class="absolute bottom-8 left-3 z-[500] bg-pcgl-blue/90 text-white px-3 py-2 rounded-xl text-[10px] font-bold uppercase tracking-widest flex flex-wrap gap-x-3 gap-y-1">
+          <span class="inline-flex items-center gap-1.5"><i class="w-2.5 h-2.5 rounded-full inline-block" style="background:#60a5fa"></i>Squadra</span>
+          <span class="inline-flex items-center gap-1.5"><i class="w-2.5 h-2.5 rounded-full inline-block" style="background:#facc15"></i>Attenzione</span>
+          <span class="inline-flex items-center gap-1.5"><i class="w-2.5 h-2.5 rounded-full inline-block" style="background:#f97316"></i>Preallarme</span>
+          <span class="inline-flex items-center gap-1.5"><i class="w-2.5 h-2.5 rounded-full inline-block" style="background:#dc2626"></i>Allarme</span>
+        </div>
       </div>
       <div class="col-span-4 flex flex-col gap-4 min-h-0">
         <div class="relative rounded-3xl overflow-hidden bg-black border border-white/10 aspect-video flex-none">
@@ -573,8 +579,8 @@
           <div id="wallFeed" class="flex flex-col gap-2"></div>
         </div>
         <div class="bg-white text-pcgl-blue rounded-3xl p-4 flex items-center gap-4 flex-none">
-          <div id="wallQr" class="w-28 h-28 flex-none qr-box"></div>
-          <div class="min-w-0"><div class="font-black uppercase text-sm leading-tight">Prova la demo sul tuo telefono</div><div class="text-[10px] text-gray-500 mt-1">Inquadra il QR</div></div>
+          <div id="wallQr" class="w-28 h-28 xl:w-40 xl:h-40 flex-none qr-box"></div>
+          <div class="min-w-0"><div class="font-black uppercase text-sm xl:text-lg leading-tight">Prova la demo sul tuo telefono</div><div class="text-[10px] xl:text-xs text-gray-500 mt-1">Inquadra il QR con la fotocamera</div></div>
         </div>
       </div>
       <div id="wallSos" class="absolute inset-0 z-[900] bg-red-600/95 flex flex-col items-center justify-center text-center animate-pulse rounded-3xl" hidden></div>
@@ -1844,12 +1850,19 @@
   }
   function initWallMap(){
     if(wall.map || !window.L) return;
-    wall.map = L.map("wallMap", { zoomControl: false, dragging: false, scrollWheelZoom: false, doubleClickZoom: false, touchZoom: false, keyboard: false }).setView([42.3, 12.8], 5.6);
+    wall.map = L.map("wallMap", { zoomControl: false, dragging: false, scrollWheelZoom: false, doubleClickZoom: false, touchZoom: false, keyboard: false }).setView([40.3, 15.6], 7);
     addBaseMap(wall.map, "dark");
     ITALY_POINTS.forEach(function(p){
-      var color = p.tipo === "squadra" ? "#FFCC00" : (STATO_COLOR[p.stato] || "#FFCC00");
+      var color = p.tipo === "squadra" ? "#60a5fa" : (LIVELLO_COLOR[p.livello] || "#60a5fa");
       L.circleMarker([p.lat, p.lng], { radius: p.tipo === "operazione" ? 11 : 7, color: "#ffffff", weight: 2, fillColor: color, fillOpacity: 0.95 }).addTo(wall.map);
     });
+    fitWallMap();
+  }
+  // Inquadra Basilicata, Campania e Calabria (va ripetuto quando cambia la dimensione del riquadro)
+  function fitWallMap(){
+    if(!wall.map) return;
+    wall.map.invalidateSize();
+    wall.map.fitBounds(ITALY_POINTS.map(function(p){ return [p.lat, p.lng]; }), { padding: [40, 40] });
   }
   function drawWallSos(){
     if(!wall.map || !window.L) return;
@@ -1889,7 +1902,7 @@
       return '<div class="bg-white/5 border border-white/10 rounded-2xl p-3"><div class="text-3xl font-black tabular text-pcgl-yellow leading-none">' + n + '</div><div class="text-[10px] font-bold uppercase tracking-widest text-white/80 mt-1">' + l + '</div><div class="text-[9px] uppercase tracking-widest text-white/40">' + tag + '</div></div>';
     }
     document.getElementById("wallStats").innerHTML =
-      tile(wd.badges.length, "Tesserini", "Dato reale") + tile(wd.checkins.length, "Check-in", "Dato reale") +
+      tile(wd.badges.length, "Tesserini oggi", "Dato reale") + tile(wd.checkins.length, "Check-in oggi", "Dato reale") +
       (state.real
         ? tile(fmtNum(state.real.volontariAttivi), "Volontari attivi", "Dato reale PCGL") + tile(fmtNum(state.real.mezzi), "Mezzi in rete", "Dato reale PCGL")
         : tile(state.simVolontari, "Volontari attivi", "Dimostrativo") + tile(state.simMezzi, "Mezzi in rete", "Dimostrativo"));
@@ -1927,10 +1940,10 @@
     playFeed(wall.feed);
     cloudInit();
     cloudListen();
-    initWallMap();
-    drawWallSos();
-    if(wall.map) setTimeout(function(){ wall.map.invalidateSize(); }, 250);
-    renderQrInto(document.getElementById("wallQr"), location.origin + location.pathname + (new URLSearchParams(location.search).get("s") ? "?s=" + cloud.sid : ""), 118, "#003366", "#ffffff");
+    try { initWallMap(); drawWallSos(); }
+    catch(err) { console.error("Mappa del muro non disponibile:", err); }
+    if(wall.map) setTimeout(fitWallMap, 250);
+    renderQrInto(document.getElementById("wallQr"), location.origin + location.pathname + (new URLSearchParams(location.search).get("s") ? "?s=" + cloud.sid : ""), window.innerWidth >= 1280 ? 160 : 118, "#003366", "#ffffff");
     wall.running = true; wall.t0 = performance.now(); wall.last = 0; wall.lastUi = 0;
     wall.raf = requestAnimationFrame(wallLoop);
   }
@@ -1940,6 +1953,7 @@
     if(wall.raf){ cancelAnimationFrame(wall.raf); wall.raf = 0; }
     if(document.fullscreenElement && document.exitFullscreen) document.exitFullscreen().catch(function(){});
   }
+  window.addEventListener("resize", function(){ if(wall.running) setTimeout(fitWallMap, 250); });
   document.getElementById("btnWallFs").addEventListener("click", function(){
     var v = document.getElementById("view-wall");
     if(v.requestFullscreen) v.requestFullscreen().catch(function(){});
@@ -2249,11 +2263,14 @@
     }, function(){ cloud.live = false; });
   }
   /* Dati mostrati dal muro: quelli condivisi dai telefoni se l'archivio è collegato, altrimenti quelli di questo dispositivo. */
+  function startOfToday(){ var d = new Date(); d.setHours(0, 0, 0, 0); return d.getTime(); }
+  function soloOggi(list){ var t0 = startOfToday(); return (list || []).filter(function(e){ return (e.ts || 0) >= t0; }); }
   function wallData(){
     if(!cloud.live){
-      return { badges: state.badges, checkins: state.checkins, sos: state.sos, ranks: loadList(LS_RANK), allerta: state.allerta };
+      var a0 = state.allerta && (state.allerta.ts || 0) >= startOfToday() ? state.allerta : null;
+      return { badges: soloOggi(state.badges), checkins: soloOggi(state.checkins), sos: soloOggi(state.sos), ranks: soloOggi(loadList(LS_RANK)), allerta: a0 };
     }
-    function byTipo(t){ return cloud.events.filter(function(e){ return e.tipo === t; }); }
+    function byTipo(t){ return soloOggi(cloud.events).filter(function(e){ return e.tipo === t; }); }
     var al = byTipo("allerta")[0];
     return {
       badges: byTipo("badge"),
@@ -2370,7 +2387,7 @@
         stopShow(); arm();
       }
     });
-    findSlides(function(){}); // precarica le foto mentre la demo è in uso
+    if(currentView() !== "wall") findSlides(function(){}); // precarica le foto mentre la demo è in uso
 
     function currentView(){ return new URLSearchParams(location.search).get("view") || "home"; }
     function isOpen(){ return overlay.style.display === "flex"; }
