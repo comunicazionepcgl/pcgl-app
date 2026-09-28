@@ -360,10 +360,7 @@ const OrphanUserCompletionScreen = ({ user, config }) => {
             return;
         }
         
-        // Check CF duplication
-        const cfQuery = query(collection(db, 'users'), where('cf', '==', regForm.cf.toUpperCase()));
-        const cfSnap = await getDocs(cfQuery);
-        if (!cfSnap.empty) { setError("Codice Fiscale già registrato."); return; }
+        // Il controllo "Codice Fiscale già registrato" lo fa il server (completeOrphanProfile)
 
         // CONFERMA DATI E SEDE
         const confirmation = window.confirm(
@@ -396,7 +393,10 @@ const OrphanUserCompletionScreen = ({ user, config }) => {
                     privacyConsentDate: new Date().toISOString()
                 })
             });
-            if (!response.ok) throw new Error("Errore server durante il salvataggio.");
+            if (!response.ok) {
+                const body = await response.json().catch(() => ({}));
+                throw new Error(body.error || "Errore server durante il salvataggio.");
+            }
             
             // ATTESA ATTIVA DEL DOCUMENTO (Evita race condition "Orfano" al reload)
             const userDocRef = doc(db, 'users', user.uid);
@@ -1733,9 +1733,10 @@ function AppContent() {
               const params = new URLSearchParams(window.location.search);
               const uidParam = params.get('uid');
               if (uidParam) {
-                const targetDoc = await getDoc(doc(db, 'users', uidParam));
-                if (targetDoc.exists()) {
-                  setVerifyResult({ id: targetDoc.id, ...targetDoc.data() });
+                const verifyFn = httpsCallable(getFunctions(auth.app, 'europe-west1'), 'verifyVolunteer');
+                const verified = await verifyFn({ uid: uidParam }).then(r => r.data?.found ? r.data.volunteer : null).catch(e => { console.error("Verifica socio:", e); return null; });
+                if (verified) {
+                  setVerifyResult(verified);
                   setSubPage('verifica_volontario');
                   window.history.replaceState({}, document.title, window.location.pathname); // Pulisce URL
                 }
@@ -2666,7 +2667,10 @@ function AppContent() {
           })
       });
 
-      if (!response.ok) throw new Error("Errore durante il salvataggio del profilo sul server.");
+      if (!response.ok) {
+          const body = await response.json().catch(() => ({}));
+          throw new Error(body.error || "Errore durante il salvataggio del profilo sul server.");
+      }
 
       // ATTESA ATTIVA DEL DOCUMENTO (Evita race condition "Orfano" al reload)
       const userDocRef = doc(db, 'users', res.user.uid);
@@ -2696,6 +2700,7 @@ function AppContent() {
       if (err.code === 'auth/email-already-in-use') msg = "Email già utilizzata da un altro account.";
       else if (err.code === 'auth/weak-password') msg = "La password è troppo debole (min. 6 caratteri).";
       else if (err.code === 'auth/invalid-email') msg = "Formato email non valido.";
+      else if (err.message?.includes("Codice Fiscale già registrato")) msg = "Questo Codice Fiscale è già registrato. Accedi con l'account esistente o contatta il Presidente di sede.";
       setError(msg);
     }
   };
@@ -2749,10 +2754,9 @@ function AppContent() {
 
         if (scannerMode === 'verify') {
             setLoading(true);
-            const targetDoc = await getDoc(doc(db, 'users', uid));
-            setLoading(false);
-            if (targetDoc.exists()) {
-                setVerifyResult({ id: targetDoc.id, ...targetDoc.data() });
+            const found = await verifyVolunteerRemote({ uid }).finally(() => setLoading(false));
+            if (found) {
+                setVerifyResult(found);
                 showToast("Socio identificato!");
             } else {
                 showToast("Socio non trovato nel database.", 'error');
@@ -2997,22 +3001,21 @@ function AppContent() {
     showToast("Disponibilità rimossa.");
   };
 
+  // Verifica socio lato server: funziona anche per altre sedi ma restituisce solo i dati del tesserino
+  // (il codice fiscale solo al coordinamento o al presidente della stessa sede) e resta nei log.
+  const verifyVolunteerRemote = async (params) => {
+    const fn = httpsCallable(getFunctions(auth.app, 'europe-west1'), 'verifyVolunteer');
+    const res = await fn(params);
+    return res.data?.found ? res.data.volunteer : null;
+  };
+
   const handleVerificationSearch = async () => {
     if (!verifySearch.trim()) return;
     setLoading(true);
     try {
-      // Cerca per Tessera
-      let q = query(collection(db, 'users'), where('numeroTessera', '==', verifySearch.trim()));
-      let snapshot = await getDocs(q);
-      
-      // Se non trova, cerca per CF
-      if (snapshot.empty) {
-        q = query(collection(db, 'users'), where('cf', '==', verifySearch.trim().toUpperCase()));
-        snapshot = await getDocs(q);
-      }
-
-      if (!snapshot.empty) {
-        setVerifyResult({ id: snapshot.docs[0].id, ...snapshot.docs[0].data() });
+      const found = await verifyVolunteerRemote({ term: verifySearch.trim() });
+      if (found) {
+        setVerifyResult(found);
       } else {
         showToast("Nessun volontario trovato con questi dati.", 'error');
         setVerifyResult(null);
@@ -3037,20 +3040,25 @@ function AppContent() {
 
       setLoading(true);
       try {
+          // Il Presidente pu\u00f2 cercare solo nella propria sede (le regole negano le altre)
+          const base = userData.ruolo === 'presidente'
+              ? query(collection(db, 'users'), where('sede', '==', userData.sede))
+              : collection(db, 'users');
+
           // 1. Cerca per Tessera (Esatta)
-          let q = query(collection(db, 'users'), where('numeroTessera', '==', searchTerm.trim()));
+          let q = query(base, where('numeroTessera', '==', searchTerm.trim()));
           let snap = await getDocs(q);
-          
+
           // 2. Cerca per CF (Esatto)
           if(snap.empty) {
-              q = query(collection(db, 'users'), where('cf', '==', searchTerm.trim().toUpperCase()));
+              q = query(base, where('cf', '==', searchTerm.trim().toUpperCase()));
               snap = await getDocs(q);
           }
 
           // 3. Cerca per Cognome (Prefisso)
           if(snap.empty && searchTerm.length > 2) {
                const term = searchTerm.toUpperCase();
-               q = query(collection(db, 'users'), where('cognome', '>=', term), where('cognome', '<=', term + '\uf8ff'), limit(20));
+               q = query(base, where('cognome', '>=', term), where('cognome', '<=', term + '\uf8ff'), limit(20));
                snap = await getDocs(q);
           }
 
@@ -3063,6 +3071,10 @@ function AppContent() {
 
   // --- RICERCA PER SEDE (ADMIN/COORD) ---
   const handleSedeFilterChange = async (sede) => {
+      if (sede && userData.ruolo === 'presidente' && sede !== userData.sede) {
+          showToast("Puoi consultare solo i volontari della tua sede.", 'error');
+          return;
+      }
       setFilterSede(sede);
       if (sede) {
           setLoading(true);
@@ -5048,7 +5060,8 @@ function AppContent() {
 
   const searchResponsibleUser = async () => {
       if (!responsibleSearch || responsibleSearch.length < 3) return;
-      const q = query(collection(db, 'users'), where('cognome', '>=', responsibleSearch.toUpperCase()), where('cognome', '<=', responsibleSearch.toUpperCase() + '\uf8ff'), limit(5));
+      // Servono solo nome, cognome e sede: profilo pubblico
+      const q = query(collection(db, 'users_public'), where('cognome', '>=', responsibleSearch.toUpperCase()), where('cognome', '<=', responsibleSearch.toUpperCase() + '\uf8ff'), limit(5));
       const snap = await getDocs(q);
       setResponsibleSearchResults(snap.docs.map(d => ({id: d.id, ...d.data()})));
   };
@@ -8458,7 +8471,7 @@ function AppContent() {
                    </div>
                    <div className="flex justify-between border-b border-gray-100 pb-2">
                      <span className="text-xs font-bold text-gray-400 uppercase">Codice Fiscale</span>
-                     <span className="text-sm font-black text-pcgl-blue uppercase">{verifyResult.cf}</span>
+                     <span className="text-sm font-black text-pcgl-blue uppercase">{verifyResult.cf !== undefined ? verifyResult.cf : <span className="text-gray-400 font-bold normal-case">Riservato (altra sede)</span>}</span>
                    </div>
                    <div className="flex justify-between border-b border-gray-100 pb-2">
                      <span className="text-xs font-bold text-gray-400 uppercase">Tessera</span>

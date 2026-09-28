@@ -494,6 +494,58 @@ exports.syncPublicProfile = onDocumentWritten("users/{uid}", async (event) => {
 });
 
 /**
+ * ONCALL: Verifica socio (QR del tesserino, link o ricerca per N. tessera / codice fiscale).
+ * Consentita a presidenti e staff anche per volontari di altre sedi, ma restituisce solo i dati
+ * del tesserino; il codice fiscale solo al coordinamento o al presidente della stessa sede.
+ * Ogni verifica viene registrata nei log.
+ */
+exports.verifyVolunteer = onCall({ region: "europe-west1", cors: true }, async (request) => {
+    if (!request.auth) throw new HttpsError('unauthenticated', 'Devi essere autenticato.');
+    const db = admin.firestore();
+    const callerSnap = await db.collection('users').doc(request.auth.uid).get();
+    const caller = callerSnap.exists ? callerSnap.data() : {};
+    if (!['presidente', 'coordinamento', 'admin', 'superadmin'].includes(caller.ruolo)) {
+        throw new HttpsError('permission-denied', 'Solo presidenti e staff possono verificare i soci.');
+    }
+
+    const { uid, term } = request.data || {};
+    let snap = null;
+    if (uid) {
+        const d = await db.collection('users').doc(String(uid)).get();
+        if (d.exists) snap = d;
+    } else if (term) {
+        const t = String(term).trim();
+        let q = await db.collection('users').where('numeroTessera', '==', t).limit(1).get();
+        if (q.empty) q = await db.collection('users').where('cf', '==', t.toUpperCase()).limit(1).get();
+        if (!q.empty) snap = q.docs[0];
+    } else {
+        throw new HttpsError('invalid-argument', 'Indica un volontario da verificare.');
+    }
+    if (!snap) return { found: false };
+
+    const u = snap.data();
+    const card = {
+        id: snap.id,
+        nome: u.nome || '', cognome: u.cognome || '', sede: u.sede || '',
+        stato: u.stato || '', ruolo: u.ruolo || '', fotoProfilo: u.fotoProfilo || '',
+        numeroTessera: u.numeroTessera || '', specializzazioni: u.specializzazioni || []
+    };
+    const datiCompleti = caller.ruolo !== 'presidente' || caller.sede === u.sede;
+    if (datiCompleti) card.cf = u.cf || '';
+
+    await db.collection('logs').add({
+        azione: "VERIFICA SOCIO",
+        dettagli: `Verificato ${card.nome} ${card.cognome} (${card.sede})${datiCompleti ? '' : ' - dati ridotti, altra sede'}`,
+        autore: `${caller.nome || ''} ${caller.cognome || ''}`.trim() || request.auth.uid,
+        autoreUid: request.auth.uid,
+        data: new Date().toISOString(),
+        targetUid: snap.id
+    });
+
+    return { found: true, volunteer: card };
+});
+
+/**
  * CRON JOB: riallinea tutti i profili pubblici (rete di sicurezza + popolamento iniziale).
  * Scrive solo i profili cambiati e rimuove quelli di utenti non più esistenti.
  */
@@ -826,6 +878,16 @@ exports.completeOrphanProfile = onRequest({ region: "europe-west1", timeoutSecon
             const decodedToken = await admin.auth().verifyIdToken(idToken);
             const uid = decodedToken.uid;
             const data = request.body;
+
+            // 1b. Codice fiscale già registrato? (controllo lato server: i client non possono più leggere i profili altrui)
+            const cf = String(data.cf || '').trim().toUpperCase();
+            if (cf.length !== 16) { response.status(400).json({ error: 'Codice Fiscale non valido' }); return; }
+            const cfSnap = await admin.firestore().collection('users').where('cf', '==', cf).limit(2).get();
+            if (cfSnap.docs.some(d => d.id !== uid)) {
+                response.status(409).json({ error: 'Codice Fiscale già registrato' });
+                return;
+            }
+            data.cf = cf;
 
             // 2. Generazione Tesserino (Transazione Atomica)
             const tesserino = await admin.firestore().runTransaction(async (t) => {

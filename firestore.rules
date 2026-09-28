@@ -222,7 +222,19 @@ service cloud.firestore {
     // ==========================================================================
 
     match /users/{userId} {
-      allow read: if isSignedIn();
+      // Dati personali completi: l'interessato, il Presidente della stessa sede, il Coordinamento.
+      // Gli altri volontari leggono solo users_public. La verifica socio tra sedi passa dalla
+      // Cloud Function verifyVolunteer. Il confronto sulla sede è esatto (==) perché Firestore
+      // deve poterlo dimostrare dai filtri delle query del Presidente (where('sede', '==', ...)).
+      allow get: if isSignedIn() && (
+        request.auth.uid == userId ||
+        isCoordinamento() ||
+        (isPresidente() && resource.data.sede == getUserData().sede)
+      );
+      allow list: if isSignedIn() && (
+        isCoordinamento() ||
+        (isPresidente() && resource.data.sede == getUserData().sede)
+      );
       allow create: if isSignedIn() && request.auth.uid == userId;
       allow update: if isSignedIn() && (
         // L'utente modifica se stesso ma NON i privilegi o lo stato
