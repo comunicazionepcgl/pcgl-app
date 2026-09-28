@@ -3227,7 +3227,19 @@ function AppContent() {
       }
   };
 
-  const getDriveImgUrl = (id) => id ? `https://drive.google.com/thumbnail?id=${id}&sz=w600` : null;
+  // Accetta sia l'ID del file Drive sia un link di condivisione completo (…/file/d/ID/view, …?id=ID)
+  const extractDriveId = (value) => {
+      const s = String(value || '').trim();
+      const m = s.match(/\/d\/([\w-]{10,})/) || s.match(/[?&]id=([\w-]{10,})/);
+      return m ? m[1] : s;
+  };
+  const getDriveImgUrl = (value) => {
+      if (!value) return null;
+      const s = String(value).trim();
+      // URL di un'immagine non su Drive (es. Firebase Storage): usata così com'è
+      if (/^https?:\/\//i.test(s) && !/drive\.google\.com|docs\.google\.com/i.test(s)) return s;
+      return `https://drive.google.com/thumbnail?id=${extractDriveId(s)}&sz=w600`;
+  };
 
   // --- FUNZIONI DI SUPPORTO ---
   const updateRole = async (uid, newRole) => {
@@ -3901,8 +3913,9 @@ function AppContent() {
         titolo: newNewsTitle.toUpperCase(),
         testo: newNewsContent,
         testoBreve: testoBreve,
-        imgAnteprima: newNewsImgPreview,
-        imgInterna: newNewsImgInternal,
+        // Se è stato incollato un link Drive completo, salva solo l'ID (lo usa anche il sito pcgl.it)
+        imgAnteprima: /drive\.google\.com|docs\.google\.com/i.test(newNewsImgPreview) ? extractDriveId(newNewsImgPreview) : newNewsImgPreview.trim(),
+        imgInterna: /drive\.google\.com|docs\.google\.com/i.test(newNewsImgInternal) ? extractDriveId(newNewsImgInternal) : newNewsImgInternal.trim(),
         link: newNewsLink,
         dataScadenza: scadenza,
         importante: newNewsImportant,
@@ -7172,8 +7185,8 @@ function AppContent() {
             <input type="text" placeholder="Titolo della News" className="w-full p-4 bg-gray-50 rounded-lg border border-gray-200 font-medium focus:border-pcgl-yellow transition-all" value={newNewsTitle} onChange={(e) => setNewNewsTitle(e.target.value)} />
             <textarea className="w-full p-4 bg-gray-50 rounded-lg border border-gray-200 font-medium focus:border-pcgl-yellow transition-all resize-none" rows="3" placeholder="Contenuto della News..." value={newNewsContent} onChange={(e) => setNewNewsContent(e.target.value)}></textarea>
             
-            <input type="text" placeholder="ID Drive Immagine Anteprima (es. 1a2b3c...)" className="w-full p-4 bg-gray-50 rounded-lg border border-gray-200 font-medium text-sm focus:border-pcgl-yellow transition-all" value={newNewsImgPreview} onChange={(e) => setNewNewsImgPreview(e.target.value)} />
-            <input type="text" placeholder="ID Drive Immagine Interna (Opzionale)" className="w-full p-4 bg-gray-50 rounded-lg border border-gray-200 font-medium text-sm focus:border-pcgl-yellow transition-all" value={newNewsImgInternal} onChange={(e) => setNewNewsImgInternal(e.target.value)} />
+            <input type="text" placeholder="Immagine Anteprima: link o ID Drive (file condiviso con 'Chiunque abbia il link')" className="w-full p-4 bg-gray-50 rounded-lg border border-gray-200 font-medium text-sm focus:border-pcgl-yellow transition-all" value={newNewsImgPreview} onChange={(e) => setNewNewsImgPreview(e.target.value)} />
+            <input type="text" placeholder="Immagine Interna: link o ID Drive (Opzionale)" className="w-full p-4 bg-gray-50 rounded-lg border border-gray-200 font-medium text-sm focus:border-pcgl-yellow transition-all" value={newNewsImgInternal} onChange={(e) => setNewNewsImgInternal(e.target.value)} />
             <input type="text" placeholder="Link Esterno (Opzionale)" className="w-full p-4 bg-gray-50 rounded-lg border border-gray-200 font-medium text-sm focus:border-pcgl-yellow transition-all" value={newNewsLink} onChange={(e) => setNewNewsLink(e.target.value)} />
 
             {/* SELEZIONE MODULO DATI */}
