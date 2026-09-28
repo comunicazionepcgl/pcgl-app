@@ -2241,18 +2241,8 @@ function AppContent() {
         // Classifica (Gamification): precalcolata dalla Cloud Function updateLeaderboard ogni 6 ore
         try {
           const snapTop = await getDoc(doc(db, 'statistiche', 'classifica'));
-          if (snapTop.exists() && Array.isArray(snapTop.data().top)) {
-            setLeaderboard(snapTop.data().top);
-            return;
-          }
-        } catch (e) { console.warn("Classifica precalcolata non disponibile:", e.code); }
-
-        // Ripiego finché la classifica precalcolata non esiste: calcolo sull'intera anagrafica
-        const qUsers = query(collection(db, 'users'), where('stato', '==', 'attivo'));
-        const snapUsers = await getDocs(qUsers);
-        const usersList = snapUsers.docs.map(d => ({ nome: d.data().nome, cognome: d.data().cognome, sede: d.data().sede, corsi: d.data().fascicoloCorsi?.length || 0, badge: d.data().moduli?.length || 0, id: d.id }));
-        const ranked = usersList.map(u => ({ ...u, punti: (u.corsi * 10) + (u.badge * 50) })).sort((a,b) => b.punti - a.punti).slice(0, 10);
-        setLeaderboard(ranked);
+          setLeaderboard(snapTop.exists() && Array.isArray(snapTop.data().top) ? snapTop.data().top : []);
+        } catch (e) { console.warn("Classifica precalcolata non disponibile:", e.code); setLeaderboard([]); }
       };
       fetchStats();
     }
@@ -2848,8 +2838,8 @@ function AppContent() {
                 showToast(`Turno già completato per ${data.nome}`, 'error');
             }
         } else {
-            // Walk-in (non registrato prima)
-            const userSnap = await getDoc(doc(db, 'users', uid));
+            // Walk-in (non registrato prima): servono solo nome, cognome e sede
+            const userSnap = await getDoc(doc(db, 'users_public', uid));
             if (userSnap.exists()) {
                 const uData = userSnap.data();
                 await setDoc(partRef, {
@@ -3930,7 +3920,7 @@ function AppContent() {
           areeTematiche.forEach(a => { if (a.utentiAbilitati) a.utentiAbilitati.forEach(uid => uidsToFetch.add(uid)); });
           const missing = [...uidsToFetch].filter(uid => uid && !allUsers.find(u => u.id === uid) && !extraUsers[uid]);
           for (const uid of missing) {
-              try { const snap = await getDoc(doc(db, 'users', uid)); if (snap.exists()) setExtraUsers(prev => ({...prev, [uid]: {id: uid, ...snap.data()}})); } catch(e) {}
+              try { const snap = await getDoc(doc(db, 'users_public', uid)); if (snap.exists()) setExtraUsers(prev => ({...prev, [uid]: {id: uid, ...snap.data()}})); } catch(e) {}
           }
       };
       fetchMissingUsers();

@@ -4,7 +4,7 @@
  * Versione V2 (Cloud Functions 2nd Gen)
  */
 
-const { onDocumentCreated, onDocumentUpdated } = require("firebase-functions/v2/firestore");
+const { onDocumentCreated, onDocumentUpdated, onDocumentWritten } = require("firebase-functions/v2/firestore");
 const { onCall, HttpsError, onRequest } = require("firebase-functions/v2/https");
 const { onSchedule } = require("firebase-functions/v2/scheduler");
 const { setGlobalOptions } = require("firebase-functions/v2");
@@ -459,6 +459,70 @@ exports.archiveOldNews = onSchedule({ schedule: "every day 04:00", timeZone: "Eu
         }
     } catch (error) {
         logger.error("Errore durante archiveOldNews:", error);
+    }
+});
+
+/**
+ * PROFILO PUBBLICO: users_public/{uid} contiene solo i dati che servono agli altri volontari
+ * (nome, sede, foto, moduli...). Codice fiscale, contatti, indirizzo, gruppo sanguigno ecc.
+ * restano solo in users/{uid}, leggibile dall'interessato e dai responsabili.
+ */
+const PUBLIC_PROFILE_FIELDS = ['nome', 'cognome', 'sede', 'ruolo', 'stato', 'fotoProfilo', 'moduli', 'specializzazioni'];
+
+function buildPublicProfile(data) {
+    const pub = {};
+    PUBLIC_PROFILE_FIELDS.forEach(f => { if (data[f] !== undefined) pub[f] = data[f]; });
+    return pub;
+}
+
+function sameProfile(a, b) {
+    return JSON.stringify(a || {}) === JSON.stringify(b || {});
+}
+
+exports.syncPublicProfile = onDocumentWritten("users/{uid}", async (event) => {
+    const ref = admin.firestore().collection('users_public').doc(event.params.uid);
+    const after = event.data.after;
+    if (!after.exists) {
+        await ref.delete();
+        return;
+    }
+    const pub = buildPublicProfile(after.data());
+    const before = event.data.before.exists ? buildPublicProfile(event.data.before.data()) : null;
+    // Evita scritture inutili quando cambiano solo campi privati (es. fcmToken, ultimoAccesso)
+    if (before && sameProfile(before, pub)) return;
+    await ref.set(pub);
+});
+
+/**
+ * CRON JOB: riallinea tutti i profili pubblici (rete di sicurezza + popolamento iniziale).
+ * Scrive solo i profili cambiati e rimuove quelli di utenti non più esistenti.
+ */
+exports.resyncPublicProfiles = onSchedule({ schedule: "every day 03:30", timeZone: "Europe/Rome", memory: "1GiB", timeoutSeconds: 540 }, async () => {
+    const db = admin.firestore();
+    try {
+        const [usersSnap, publicSnap] = await Promise.all([db.collection('users').get(), db.collection('users_public').get()]);
+        const existing = new Map(publicSnap.docs.map(d => [d.id, d.data()]));
+        let writer = db.batch(), pending = 0, scritti = 0, rimossi = 0;
+        const flush = async () => { if (pending) { await writer.commit(); writer = db.batch(); pending = 0; } };
+
+        for (const u of usersSnap.docs) {
+            const pub = buildPublicProfile(u.data());
+            if (!sameProfile(existing.get(u.id), pub)) {
+                writer.set(db.collection('users_public').doc(u.id), pub);
+                pending++; scritti++;
+                if (pending >= 400) await flush();
+            }
+            existing.delete(u.id);
+        }
+        for (const orphanId of existing.keys()) {
+            writer.delete(db.collection('users_public').doc(orphanId));
+            pending++; rimossi++;
+            if (pending >= 400) await flush();
+        }
+        await flush();
+        logger.info(`Profili pubblici: ${usersSnap.size} utenti, ${scritti} aggiornati, ${rimossi} rimossi.`);
+    } catch (error) {
+        logger.error("Errore durante resyncPublicProfiles:", error);
     }
 });
 

@@ -38,7 +38,7 @@ export const CampagnaAIBSOGL = ({ currentUser }) => {
             });
         }
         if (isStaff) {
-            const unsubVol = onSnapshot(query(collection(db, 'users'), where('stato', 'in', ['attivo', 'sospeso'])), s => setAllVolontari(s.docs.map(d => ({ id: d.id, nome: `${d.data().nome} ${d.data().cognome}`, sede: d.data().sede }))));
+            const unsubVol = onSnapshot(query(collection(db, 'users_public'), where('stato', 'in', ['attivo', 'sospeso'])), s => setAllVolontari(s.docs.map(d => ({ id: d.id, nome: `${d.data().nome} ${d.data().cognome}`, sede: d.data().sede }))));
             const unsubMezzi = onSnapshot(collection(db, 'mezzi'), s => setAllMezzi(s.docs.map(d => ({ id: d.id, targa: d.data().targa, tipologia: d.data().tipologia, sede: d.data().sede }))));
             return () => { unsubVol(); unsubMezzi(); };
         }
@@ -54,7 +54,7 @@ export const CampagnaAIBSOGL = ({ currentUser }) => {
     // Fetch volontari e mezzi della sede (solo per il presidente)
     useEffect(() => {
         if (isPresidente) {
-            const unsubVol = onSnapshot(query(collection(db, 'users'), where('sede', '==', currentUser.sede), where('stato', 'in', ['attivo', 'sospeso'])), s => setVolontariSede(s.docs.map(d => ({ id: d.id, nome: `${d.data().nome} ${d.data().cognome}` }))));
+            const unsubVol = onSnapshot(query(collection(db, 'users_public'), where('sede', '==', currentUser.sede), where('stato', 'in', ['attivo', 'sospeso'])), s => setVolontariSede(s.docs.map(d => ({ id: d.id, nome: `${d.data().nome} ${d.data().cognome}` }))));
             const unsubMezzi = onSnapshot(query(collection(db, 'mezzi'), where('sede', '==', currentUser.sede)), s => setMezziSede(s.docs.map(d => ({ id: d.id, targa: d.data().targa, tipologia: d.data().tipologia }))));
             return () => { unsubVol(); unsubMezzi(); };
         }

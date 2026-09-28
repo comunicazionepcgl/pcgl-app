@@ -236,6 +236,15 @@ service cloud.firestore {
     }
 
     /**
+     * Profilo pubblico: solo nome, cognome, sede, ruolo, stato, foto, moduli, specializzazioni.
+     * Scritto esclusivamente dalla Cloud Function syncPublicProfile a partire da users/{uid}.
+     */
+    match /users_public/{userId} {
+      allow read: if isSignedIn();
+      allow write: if false;
+    }
+
+    /**
      * Documentazione Sensibile: Visite mediche, Patenti e Attestati.
      */
     match /documenti_volontari/{docId} {

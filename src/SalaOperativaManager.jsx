@@ -5,7 +5,7 @@ import { LogisticaSOGL } from './LogisticaSOGL.jsx';
 import { LiveWallSOGL } from './LiveStreamSOGL.jsx';
 import { EmergenzeSOGL } from './EmergenzeSOGL.jsx';
 import { CampagnaAIBSOGL } from './CampagnaAIBSOGL.jsx';
-import { collection, onSnapshot, query, where } from 'firebase/firestore';
+import { collection, onSnapshot, query, where, getCountFromServer } from 'firebase/firestore';
 import { db } from './firebase';
 
 
@@ -15,7 +15,11 @@ export const SalaOperativaManager = ({ currentUser, onBack, onNavigate }) => {
 
   useEffect(() => {
       if (activeTab === 'dashboard') {
-          const unsubV = onSnapshot(collection(db, 'users'), s => setStats(prev => ({...prev, volontari: s.docs.length})));
+          // Conteggio lato server: 1 lettura ogni 1000 profili invece di scaricarli (e riascoltarli) tutti
+          getCountFromServer(collection(db, 'users_public'))
+              .then(s => setStats(prev => ({...prev, volontari: s.data().count})))
+              .catch(e => console.warn("Conteggio volontari non disponibile:", e.code));
+          const unsubV = () => {};
           const unsubM = onSnapshot(collection(db, 'mezzi'), s => setStats(prev => ({...prev, mezzi: s.docs.length})));
           const unsubE = onSnapshot(query(collection(db, 'attivazioni'), where('stato', '==', 'attiva')), s => setStats(prev => ({...prev, emergenze: s.docs.length})));
           const unsubA = onSnapshot(query(collection(db, 'aib_interventi'), where('stato', 'in', ['segnalato', 'in_corso'])), s => setStats(prev => ({...prev, aib: s.docs.length})));

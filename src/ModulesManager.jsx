@@ -183,7 +183,7 @@ export const ModulesManager = ({ currentUser, onBack, allUsers, onViewVolunteer,
 
         for (const uid of missing) {
             try {
-                const snap = await getDoc(doc(db, 'users', uid));
+                const snap = await getDoc(doc(db, 'users_public', uid)); // solo dati pubblici (nome, sede...)
                 if (snap.exists()) setExtraUsers(prev => ({...prev, [uid]: {id: uid, ...snap.data()}}));
             } catch (e) { console.error("Error fetching user", uid, e); }
         }
