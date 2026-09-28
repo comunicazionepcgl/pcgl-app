@@ -463,6 +463,37 @@ exports.archiveOldNews = onSchedule({ schedule: "every day 04:00", timeZone: "Eu
 });
 
 /**
+ * CRON JOB: Classifica volontari (Top 10) per la pagina Statistiche.
+ * Calcolata qui ogni 6 ore e salvata in un solo documento, così l'app legge 1 documento
+ * invece dell'intera anagrafica a ogni apertura della pagina.
+ * Punteggio: 10 punti per corso nel fascicolo, 50 per squadra/modulo d'appartenenza.
+ */
+exports.updateLeaderboard = onSchedule({ schedule: "every 6 hours", timeZone: "Europe/Rome", memory: "1GiB", timeoutSeconds: 300 }, async (event) => {
+    try {
+        const snap = await admin.firestore().collection('users')
+            .where('stato', '==', 'attivo')
+            .select('nome', 'cognome', 'sede', 'fascicoloCorsi', 'moduli')
+            .get();
+
+        const top = snap.docs.map(d => {
+            const u = d.data();
+            const corsi = Array.isArray(u.fascicoloCorsi) ? u.fascicoloCorsi.length : 0;
+            const badge = Array.isArray(u.moduli) ? u.moduli.length : 0;
+            return { id: d.id, nome: u.nome || '', cognome: u.cognome || '', sede: u.sede || '', corsi, badge, punti: corsi * 10 + badge * 50 };
+        }).sort((a, b) => b.punti - a.punti).slice(0, 10);
+
+        await admin.firestore().collection('statistiche').doc('classifica').set({
+            top,
+            volontariConsiderati: snap.size,
+            aggiornatoIl: new Date().toISOString()
+        });
+        logger.info(`Classifica aggiornata su ${snap.size} volontari attivi.`);
+    } catch (error) {
+        logger.error("Errore durante updateLeaderboard:", error);
+    }
+});
+
+/**
  * TRIGGER: Nuova News Importante
  */
 exports.onNewsCreated = onDocumentCreated("news/{newsId}", async (event) => {

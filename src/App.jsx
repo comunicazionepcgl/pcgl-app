@@ -1434,6 +1434,7 @@ function AppContent() {
   const [newNewsContent, setNewNewsContent] = useState('');
   const [newNewsImgPreview, setNewNewsImgPreview] = useState(''); // ID Drive Anteprima
   const [newNewsImgInternal, setNewNewsImgInternal] = useState(''); // ID Drive Interna
+  const [newNewsImgUrl, setNewNewsImgUrl] = useState(''); // Foto caricata su Firebase Storage (ha la precedenza sugli ID Drive)
   const [newNewsLink, setNewNewsLink] = useState(''); // Link opzionale
   const [newNewsVisibility, setNewNewsVisibility] = useState('pubblica'); // 'pubblica' | 'riservata'
   const [newNewsTargetRole, setNewNewsTargetRole] = useState('tutti');
@@ -2237,7 +2238,16 @@ function AppContent() {
         });
         setStatsData(counts);
 
-        // Calcolo Classifica (Gamification)
+        // Classifica (Gamification): precalcolata dalla Cloud Function updateLeaderboard ogni 6 ore
+        try {
+          const snapTop = await getDoc(doc(db, 'statistiche', 'classifica'));
+          if (snapTop.exists() && Array.isArray(snapTop.data().top)) {
+            setLeaderboard(snapTop.data().top);
+            return;
+          }
+        } catch (e) { console.warn("Classifica precalcolata non disponibile:", e.code); }
+
+        // Ripiego finché la classifica precalcolata non esiste: calcolo sull'intera anagrafica
         const qUsers = query(collection(db, 'users'), where('stato', '==', 'attivo'));
         const snapUsers = await getDocs(qUsers);
         const usersList = snapUsers.docs.map(d => ({ nome: d.data().nome, cognome: d.data().cognome, sede: d.data().sede, corsi: d.data().fascicoloCorsi?.length || 0, badge: d.data().moduli?.length || 0, id: d.id }));
@@ -3240,6 +3250,44 @@ function AppContent() {
       if (/^https?:\/\//i.test(s) && !/drive\.google\.com|docs\.google\.com/i.test(s)) return s;
       return `https://drive.google.com/thumbnail?id=${extractDriveId(s)}&sz=w600`;
   };
+  // Immagine di una news: prima la foto caricata dall'app, poi gli ID Drive
+  const getNewsImg = (news, interna = false) => {
+      if (!news) return null;
+      return news.imgUrl || getDriveImgUrl(interna ? (news.imgInterna || news.imgAnteprima) : news.imgAnteprima);
+  };
+
+  // Riduce le foto dei telefoni (spesso 5-8 MB) a max 1600px JPEG prima del caricamento
+  const resizeImageFile = async (file, maxSide = 1600, quality = 0.85) => {
+      try {
+          const bmp = await createImageBitmap(file);
+          const scale = Math.min(1, maxSide / Math.max(bmp.width, bmp.height));
+          const canvas = document.createElement('canvas');
+          canvas.width = Math.round(bmp.width * scale);
+          canvas.height = Math.round(bmp.height * scale);
+          canvas.getContext('2d').drawImage(bmp, 0, 0, canvas.width, canvas.height);
+          if (bmp.close) bmp.close();
+          const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/jpeg', quality));
+          if (blob) return blob;
+      } catch (e) { console.warn("Ridimensionamento non riuscito, carico l'originale:", e); }
+      return file;
+  };
+
+  const handleNewsPhotoUpload = async (file) => {
+      if (!file) return;
+      if (!file.type.startsWith('image/')) { showToast("Il file selezionato non è un'immagine valida.", 'error'); return; }
+      setUploading(true);
+      try {
+          const blob = await resizeImageFile(file);
+          if (blob.size > 5 * 1024 * 1024) { showToast("L'immagine è troppo grande (max 5MB).", 'error'); return; }
+          const storageRef = ref(storage, `news_images/${Date.now()}_${user.uid}.jpg`);
+          await uploadBytes(storageRef, blob, { contentType: blob.type || 'image/jpeg' });
+          setNewNewsImgUrl(await getDownloadURL(storageRef));
+          showToast("Foto caricata!");
+      } catch (e) {
+          console.error(e);
+          showToast("Errore caricamento foto: " + (e.code || e.message), 'error');
+      } finally { setUploading(false); }
+  };
 
   // --- FUNZIONI DI SUPPORTO ---
   const updateRole = async (uid, newRole) => {
@@ -3916,6 +3964,7 @@ function AppContent() {
         // Se è stato incollato un link Drive completo, salva solo l'ID (lo usa anche il sito pcgl.it)
         imgAnteprima: /drive\.google\.com|docs\.google\.com/i.test(newNewsImgPreview) ? extractDriveId(newNewsImgPreview) : newNewsImgPreview.trim(),
         imgInterna: /drive\.google\.com|docs\.google\.com/i.test(newNewsImgInternal) ? extractDriveId(newNewsImgInternal) : newNewsImgInternal.trim(),
+        imgUrl: newNewsImgUrl || '',
         link: newNewsLink,
         dataScadenza: scadenza,
         importante: newNewsImportant,
@@ -3946,7 +3995,7 @@ function AppContent() {
   const resetNewsForm = () => {
     setEditingNewsId(null);
     setNewNewsTitle(''); setNewNewsContent(''); setNewNewsExpiration(''); setNewNewsImportant(false); 
-    setNewNewsImgPreview(''); setNewNewsImgInternal(''); setNewNewsLink('');
+    setNewNewsImgPreview(''); setNewNewsImgInternal(''); setNewNewsImgUrl(''); setNewNewsLink('');
     setNewNewsVisibility('pubblica');
     setNewNewsTargetRole('tutti');
     setNewNewsTargetSede('tutte');
@@ -3960,6 +4009,7 @@ function AppContent() {
       setNewNewsContent(news.testo || news.contenuto);
       setNewNewsImgPreview(news.imgAnteprima || '');
       setNewNewsImgInternal(news.imgInterna || '');
+      setNewNewsImgUrl(news.imgUrl || '');
       setNewNewsLink(news.link || '');
       setNewNewsVisibility(news.visibilita || 'pubblica');
       setNewNewsTargetRole(news.targetRuolo || 'tutti');
@@ -6576,8 +6626,8 @@ function AppContent() {
                 <div className="bg-white rounded-[2.5rem] shadow-card border border-gray-100 overflow-hidden animate-in zoom-in duration-300">
                   {/* Cover Image (Interna o Fallback Anteprima) */}
                   <div className="w-full h-64 bg-gray-200 relative">
-                     {(selectedNews.imgInterna || selectedNews.imgAnteprima) ? (
-                        <img src={getDriveImgUrl(selectedNews.imgInterna || selectedNews.imgAnteprima)} className="w-full h-full object-cover" alt="Cover" />
+                     {(selectedNews.imgUrl || selectedNews.imgInterna || selectedNews.imgAnteprima) ? (
+                        <img src={getNewsImg(selectedNews, true)} className="w-full h-full object-cover" alt="Cover" />
                      ) : (
                         <div className="w-full h-full flex items-center justify-center bg-pcgl-blue text-white"><Megaphone size={48}/></div>
                      )}
@@ -6670,7 +6720,7 @@ function AppContent() {
                 newsFeed.length > 0 ? newsFeed.map(news => (
                 <div key={news.id} onClick={() => setSelectedNews(news)} className={`${news.importante ? 'bg-red-50 border-red-200' : 'bg-white border-gray-100'} p-4 rounded-2xl shadow-card border flex gap-4 cursor-pointer active:scale-95 transition-transform`}>
                   <div className="w-24 h-24 bg-gray-200 rounded-xl flex-shrink-0 overflow-hidden">
-                     {news.imgAnteprima ? <img src={getDriveImgUrl(news.imgAnteprima)} className="w-full h-full object-cover" /> : <div className="w-full h-full flex items-center justify-center text-gray-400"><Megaphone size={24}/></div>}
+                     {(news.imgUrl || news.imgAnteprima) ? <img src={getNewsImg(news)} className="w-full h-full object-cover" /> : <div className="w-full h-full flex items-center justify-center text-gray-400"><Megaphone size={24}/></div>}
                   </div>
                   <div className="flex-1">
                      <div className="flex justify-between items-start mb-1">
@@ -7187,6 +7237,21 @@ function AppContent() {
             
             <input type="text" placeholder="Immagine Anteprima: link o ID Drive (file condiviso con 'Chiunque abbia il link')" className="w-full p-4 bg-gray-50 rounded-lg border border-gray-200 font-medium text-sm focus:border-pcgl-yellow transition-all" value={newNewsImgPreview} onChange={(e) => setNewNewsImgPreview(e.target.value)} />
             <input type="text" placeholder="Immagine Interna: link o ID Drive (Opzionale)" className="w-full p-4 bg-gray-50 rounded-lg border border-gray-200 font-medium text-sm focus:border-pcgl-yellow transition-all" value={newNewsImgInternal} onChange={(e) => setNewNewsImgInternal(e.target.value)} />
+
+            {/* FOTO DAL DISPOSITIVO (Firebase Storage): ha la precedenza sugli ID Drive */}
+            <div className="flex items-center gap-3">
+                <label className={`flex-1 p-4 rounded-lg border-2 border-dashed font-bold text-sm uppercase flex items-center justify-center cursor-pointer transition-all ${uploading ? 'border-gray-200 text-gray-400' : 'border-pcgl-blue/30 text-pcgl-blue hover:bg-blue-50'}`}>
+                    <Upload size={18} className="mr-2"/> {uploading ? 'Caricamento...' : (newNewsImgUrl ? 'Sostituisci foto' : 'Oppure carica una foto')}
+                    <input type="file" accept="image/*" className="hidden" disabled={uploading} onChange={(e) => { handleNewsPhotoUpload(e.target.files?.[0]); e.target.value = ''; }} />
+                </label>
+                {newNewsImgUrl && (
+                    <div className="relative shrink-0">
+                        <img src={newNewsImgUrl} className="w-16 h-16 object-cover rounded-xl border border-gray-200" alt="Foto news" />
+                        <button type="button" onClick={() => setNewNewsImgUrl('')} className="absolute -top-2 -right-2 bg-red-500 text-white rounded-full p-1 shadow" title="Rimuovi foto"><X size={12}/></button>
+                    </div>
+                )}
+            </div>
+            {newNewsImgUrl && <p className="text-[11px] text-gray-400 -mt-2 ml-1">Viene usata la foto caricata al posto delle immagini Drive.</p>}
             <input type="text" placeholder="Link Esterno (Opzionale)" className="w-full p-4 bg-gray-50 rounded-lg border border-gray-200 font-medium text-sm focus:border-pcgl-yellow transition-all" value={newNewsLink} onChange={(e) => setNewNewsLink(e.target.value)} />
 
             {/* SELEZIONE MODULO DATI */}
@@ -9772,7 +9837,7 @@ function AppContent() {
                   </div>
                   <div className="flex gap-4 overflow-x-auto pb-4 -mx-4 px-4 snap-x snap-mandatory" style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}>
                     {newsFeed.length > 0 ? newsFeed.slice(0, 5).map((news) => (
-                      <div key={news.id} onClick={() => { setSelectedNews(news); setSubPage('news_view'); }} className="snap-start shrink-0 w-[85%] aspect-[16/10] rounded-[2.5rem] bg-cover bg-center relative overflow-hidden shadow-lg bg-white cursor-pointer active:scale-95 transition-transform" style={{ backgroundImage: `url('${getDriveImgUrl(news.imgAnteprima) || APP_LOGO}')` }}>
+                      <div key={news.id} onClick={() => { setSelectedNews(news); setSubPage('news_view'); }} className="snap-start shrink-0 w-[85%] aspect-[16/10] rounded-[2.5rem] bg-cover bg-center relative overflow-hidden shadow-lg bg-white cursor-pointer active:scale-95 transition-transform" style={{ backgroundImage: `url('${getNewsImg(news) || APP_LOGO}')` }}>
                         <div className="absolute inset-0 bg-gradient-to-b from-transparent to-[#001a33]/90"></div>
                         <div className="absolute bottom-0 left-0 p-5 w-full">
                           <span className={`${news.importante ? 'bg-red-600 text-white' : 'bg-[#FFCC00] text-[#001a33]'} text-[9px] font-black px-2 py-0.5 rounded-full uppercase mb-2 inline-block`}>{news.importante ? 'Importante' : 'Avviso'}</span>

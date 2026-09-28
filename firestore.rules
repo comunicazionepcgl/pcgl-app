@@ -501,6 +501,13 @@ service cloud.firestore {
       allow read, update, delete: if isCoordinamento();
     }
 
+    // Statistiche precalcolate dalle Cloud Functions (es. classifica volontari).
+    // Leggibili da chi vede la pagina Statistiche; scritte solo dal backend.
+    match /statistiche/{docId} {
+      allow read: if isSignedIn() && isPresidente();
+      allow write: if false;
+    }
+
     match /telegram_uploads/{docId} {
       allow read: if isSignedIn();
       allow create: if false; // Solo la Cloud Function può creare i record dai messaggi

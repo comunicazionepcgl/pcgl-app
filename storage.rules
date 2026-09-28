@@ -106,6 +106,13 @@ service firebase.storage {
       allow write: if isSignedIn() && request.auth.uid == userId && isValidSize(10);
     }
 
+    // 10. FOTO DELLE NEWS (Max 5MB, Solo Immagini)
+    // Caricate da chi può pubblicare news; mostrate tramite il link di download salvato nella news.
+    match /news_images/{fileName} {
+      allow read: if isSignedIn();
+      allow create: if isSignedIn() && (isStaff() || isPresidente()) && isImage() && isValidSize(5);
+    }
+
     // Blocca tutto il resto (Sicurezza Default per evitare l'avviso via mail)
     match /{allPaths=**} {
       allow read, write: if false;
