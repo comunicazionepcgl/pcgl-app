@@ -1,0 +1,61 @@
+COPIONE DELLA VOCE NARRANTE - TOUR GUIDATO DELLA DEMO PCGL
+==========================================================
+
+Come usarlo
+- Genera un file audio MP3 per ogni passo con lo strumento di sintesi vocale che preferisci,
+  incollando il testo così com'è (voce italiana, velocità normale o leggermente lenta).
+- Salva i file con il numero del passo: 01.mp3, 02.mp3 ... 16.mp3
+- Caricali su pcgl.it nella cartella reas/tour/ (accanto a index.html, come la cartella foto).
+- Ogni passo dura quanto il suo audio; se un file manca, quel passo resta solo testo.
+- Durata consigliata: 6-12 secondi per passo (circa 15-30 parole).
+- Pronuncia: "PCGL" si legge lettera per lettera ("pi-ci-gi-elle"); "APR" si legge "a-pi-erre".
+  Se lo strumento sbaglia, scrivi nel testo "Pi Ci Gi Elle" e "A Pi Erre".
+
+
+01.mp3 - Benvenuto
+Benvenuto nella demo della Protezione Civile Gruppo Lucano. In due minuti ti mostriamo come i nostri volontari usano la loro app, ogni giorno, sul campo e in sala operativa.
+
+02.mp3 - La home del volontario
+Questa è la home del volontario. Da qui si raggiunge tutto: il tesserino, il percorso formativo, il check-in, le allerte e le esercitazioni.
+
+03.mp3 - Il tesserino digitale
+Ogni volontario ha il suo tesserino digitale, con foto, sede e specializzazione. Basta inserire i dati, e il tesserino è pronto.
+
+04.mp3 - Pronto in un tocco
+Ecco il tesserino, con il suo codice QR personale. Con un solo controllo, i responsabili verificano chi è in servizio e con quale qualifica.
+
+05.mp3 - Check-in
+Le presenze a corsi, eventi ed esercitazioni si registrano in pochi secondi, anche inquadrando un codice QR. Niente più fogli da compilare.
+
+06.mp3 - Il percorso del volontario
+Il percorso del volontario: dalla domanda di iscrizione al corso base, fino alle specializzazioni, come l'antincendio boschivo, la logistica o la sala operativa.
+
+07.mp3 - La Sala Operativa
+Questa è la Sala Operativa. I numeri che vedi sono reali: volontari attivi, mezzi, sedi e interventi, aggiornati in automatico dall'app.
+
+08.mp3 - Squadre sul territorio
+Sulla mappa, squadre e operazioni sul territorio di Basilicata, Campania e Calabria, a colpo d'occhio. In questa demo le posizioni sono dimostrative.
+
+09.mp3 - Aprire un'allerta
+Aprire un'allerta richiede pochi tocchi: tipo di evento, zona e livello di criticità. I volontari ricevono subito la notifica sul telefono.
+
+10.mp3 - Dall'allerta al rapporto
+Poi si compone la squadra, si seguono gli stati dell'intervento fino al rientro, e alla fine il rapporto d'intervento è pronto in PDF.
+
+11.mp3 - I mezzi
+Per ogni mezzo: chilometri, scadenze e disponibilità, aggiornati direttamente dai volontari che lo stanno usando.
+
+12.mp3 - Immagini dal campo
+Le squadre e il nostro drone, un A Pi Erre DJI Mavic 3E, inviano le immagini alla Sala Operativa. Qui vedi riprese registrate a Maratea.
+
+13.mp3 - Esercitazione guidata
+Vuoi metterti alla prova? Nell'esercitazione guidata sei tu il coordinatore, e devi gestire un incendio boschivo, passo dopo passo.
+
+14.mp3 - Ogni scelta conta
+Ogni decisione riceve un commento e un punteggio. I migliori risultati compaiono in classifica, sullo schermo grande dello stand.
+
+15.mp3 - SOS e assenza di rete
+In emergenza basta un tocco per inviare un SOS con la propria posizione. E anche senza segnale l'app conserva i dati, e li invia appena torna la rete.
+
+16.mp3 - Ora tocca a te
+Ora tocca a te! Scegli il tuo profilo e prova la demo, oppure inquadra il codice QR sullo schermo grande con il tuo telefono. Grazie, e buona fiera!

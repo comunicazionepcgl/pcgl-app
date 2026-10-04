@@ -1,0 +1,48 @@
+# Server della diretta APR (DJI Mavic 3E) per la demo della fiera.
+# Riceve il flusso RTMP dal radiocomando (DJI Pilot 2) e lo rende disponibile in HLS
+# per il muro dello stand e per la demo su pcgl.it/reas.
+#
+# PRIMA DELL'USO: sostituisci CAMBIA_QUESTA_PASSWORD con una password lunga.
+
+logLevel: info
+
+# Solo chi conosce la password può trasmettere sul percorso "apr"; guardare è libero.
+authMethod: internal
+authInternalUsers:
+  - user: apr
+    pass: CAMBIA_QUESTA_PASSWORD
+    ips: []
+    permissions:
+      - action: publish
+        path: apr
+  - user: any
+    pass:
+    ips: []
+    permissions:
+      - action: read
+        path: apr
+
+# Protocolli non usati: spenti
+rtsp: false
+webrtc: false
+srt: false
+api: false
+metrics: false
+pprof: false
+playback: false
+
+# Ingresso dal radiocomando
+rtmp: true
+rtmpAddress: :1935
+
+# Uscita per i browser (dietro Caddy, che aggiunge HTTPS)
+hls: true
+hlsAddress: :8888
+hlsAllowOrigins: ['*']
+hlsVariant: mpegts
+hlsSegmentCount: 7
+hlsSegmentDuration: 2s
+hlsAlwaysRemux: true
+
+paths:
+  apr:

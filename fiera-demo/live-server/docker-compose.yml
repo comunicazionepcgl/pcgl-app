@@ -1,0 +1,27 @@
+# Server della diretta APR: MediaMTX (RTMP -> HLS) + Caddy (HTTPS automatico).
+# Avvio: docker compose up -d      Arresto: docker compose down
+services:
+  mediamtx:
+    image: bluenviron/mediamtx:latest
+    restart: unless-stopped
+    ports:
+      - "1935:1935"          # RTMP dal radiocomando DJI
+    volumes:
+      - ./mediamtx.yml:/mediamtx.yml:ro
+
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    environment:
+      - LIVE_HOST=${LIVE_HOST}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+    depends_on:
+      - mediamtx
+
+volumes:
+  caddy_data:

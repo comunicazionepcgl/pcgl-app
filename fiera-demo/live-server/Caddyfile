@@ -1,0 +1,6 @@
+# HTTPS automatico (Let's Encrypt) davanti al server della diretta.
+# LIVE_HOST si imposta nel file .env (es. live.pcgl.it oppure 1-2-3-4.sslip.io).
+{$LIVE_HOST} {
+	encode gzip
+	reverse_proxy mediamtx:8888
+}

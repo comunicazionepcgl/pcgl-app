@@ -462,7 +462,7 @@
 
     <main class="px-6 pb-16 max-w-3xl mx-auto w-full flex flex-col gap-5">
       <div class="bg-amber-50 border border-amber-200 rounded-2xl p-4 text-xs text-amber-900 leading-relaxed">
-        <strong>Funzionalit&agrave; in anteprima: non &egrave; ancora presente nell'app.</strong> Le immagini dell'APR (DJI Mavic 3E) e della Squadra Bravo sono riprese PCGL registrate (Maratea), non un collegamento in diretta. La camera della Squadra Alfa &egrave; la tua e il video resta sul tuo dispositivo: non viene inviato n&eacute; salvato da nessuna parte.
+        <strong>Funzionalit&agrave; in anteprima: non &egrave; ancora presente nell'app.</strong> <span id="liveDroneNote">Le immagini dell'APR (DJI Mavic 3E) e della Squadra Bravo sono riprese PCGL registrate (Maratea), non un collegamento in diretta.</span> La camera della Squadra Alfa &egrave; la tua e il video resta sul tuo dispositivo: non viene inviato n&eacute; salvato da nessuna parte.
       </div>
 
       <div class="relative rounded-3xl overflow-hidden bg-black shadow-card border border-gray-200 aspect-video">
@@ -470,7 +470,7 @@
         <canvas id="liveDrone" width="192" height="108" class="w-full h-full block"></canvas>
         <div class="absolute inset-0 pointer-events-none p-3 flex flex-col justify-between text-white font-mono text-[10px] leading-tight" style="text-shadow:0 1px 3px rgba(0,0,0,.9)">
           <div class="flex justify-between items-start gap-2">
-            <span class="flex items-center gap-1.5"><i class="w-2 h-2 rounded-full bg-red-500 animate-pulse inline-block"></i>REC &middot; APR DJI MAVIC 3E &middot; <span id="liveModeLabel">STANDARD</span></span>
+            <span class="flex items-center gap-1.5"><i class="w-2 h-2 rounded-full bg-red-500 animate-pulse inline-block"></i><span id="liveDroneTag">REC</span> &middot; APR DJI MAVIC 3E &middot; <span id="liveModeLabel">STANDARD</span></span>
             <span id="liveClock">--:--:--</span>
           </div>
           <div class="flex justify-between items-end gap-2">
@@ -574,8 +574,8 @@
           <video id="wallDroneVideo" class="w-full h-full object-cover block" muted loop playsinline preload="none" hidden></video>
           <canvas id="wallDrone" width="192" height="108" class="w-full h-full block"></canvas>
           <div class="absolute inset-0 pointer-events-none p-3 flex flex-col justify-between font-mono text-[11px]" style="text-shadow:0 1px 3px rgba(0,0,0,.9)">
-            <div class="flex items-center gap-2"><i class="w-2 h-2 rounded-full bg-red-500 animate-pulse inline-block"></i><span id="wallDroneLabel">APR DJI MAVIC 3E</span><span class="ml-auto text-white/60">Riprese APR PCGL</span></div>
-            <div class="flex justify-between items-end gap-2"><span id="wallDroneTele">ALT -- m</span><span class="text-[9px] text-white/50">DJI Mavic 3E &middot; Maratea</span></div>
+            <div class="flex items-center gap-2"><i class="w-2 h-2 rounded-full bg-red-500 animate-pulse inline-block"></i><span id="wallDroneLabel">APR DJI MAVIC 3E</span><span id="wallDroneSrc" class="ml-auto text-white/60">Riprese APR PCGL</span></div>
+            <div class="flex justify-between items-end gap-2"><span id="wallDroneTele">ALT -- m</span><span id="wallDroneCredit" class="text-[9px] text-white/50">DJI Mavic 3E &middot; Maratea</span></div>
           </div>
         </div>
         <div id="wallStats" class="grid grid-cols-2 gap-3 flex-none"></div>
@@ -1506,6 +1506,92 @@
     }
   }
   var DRONE_SRC = "drone.mp4";
+
+  /* ---------- diretta dell'APR (DJI Mavic 3E) ----------
+     Il radiocomando trasmette in RTMP al server della diretta, che la rende disponibile in HLS (.m3u8).
+     L'indirizzo HLS si scrive nel file live.txt accanto a questa pagina (una riga, https://.../index.m3u8)
+     oppure nell'indirizzo con ?live=... (prove). Ogni 20 s la pagina controlla se la diretta è attiva:
+     se sì la mostra con "IN DIRETTA", altrimenti torna da sola al video registrato drone.mp4. */
+  var DRONE_VIDS = ["liveDroneVideo", "wallDroneVideo"];
+  var droneLive = { url: "", on: false, hlsLib: null, players: {} };
+  function isDroneVid(v){ return !!v && DRONE_VIDS.indexOf(v.id) !== -1; }
+  function playVid(v){ var p = v.play(); if(p && p.catch) p.catch(function(){}); }
+  function validLiveUrl(u){
+    u = String(u || "").trim();
+    var local = /^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?\//i.test(u); // solo per le prove sul PC
+    return (/^https:\/\//i.test(u) || local) && /\.m3u8(\?.*)?$/i.test(u) ? u : "";
+  }
+  function loadHlsLib(){
+    if(droneLive.hlsLib) return droneLive.hlsLib;
+    droneLive.hlsLib = new Promise(function(ok, ko){
+      if(window.Hls) return ok(window.Hls);
+      var sc = document.createElement("script");
+      sc.src = "https://cdn.jsdelivr.net/npm/hls.js@1.5.17/dist/hls.min.js";
+      sc.onload = function(){ ok(window.Hls); };
+      sc.onerror = function(){ droneLive.hlsLib = null; ko(new Error("hls.js non disponibile")); };
+      document.head.appendChild(sc);
+    });
+    return droneLive.hlsLib;
+  }
+  function attachSource(v){
+    if(!isDroneVid(v)){ if(!v.getAttribute("src")) v.src = DRONE_SRC; return; }
+    var want = droneLive.on ? "live" : "file";
+    if(v.dataset.source === want) return;
+    var old = droneLive.players[v.id];
+    if(old){ try { old.destroy(); } catch(err) { /* già chiuso */ } delete droneLive.players[v.id]; }
+    v.dataset.source = want;
+    if(want === "file"){ v.loop = true; v.src = DRONE_SRC; playVid(v); return; }
+    v.loop = false;
+    var mse = !!(window.MediaSource || window.ManagedMediaSource);
+    if(!mse && v.canPlayType("application/vnd.apple.mpegurl")){ v.src = droneLive.url; playVid(v); return; } // iPhone: HLS nativo
+    // altrove hls.js (anche dove il browser dichiara HLS nativo: è più affidabile con le dirette)
+    loadHlsLib().then(function(Hls){
+      if(v.dataset.source !== "live") return;
+      if(!Hls || !Hls.isSupported()){ setDroneLive(false); return; }
+      var h = new Hls({ liveSyncDurationCount: 3, maxLiveSyncPlaybackRate: 1.5 });
+      droneLive.players[v.id] = h;
+      h.loadSource(droneLive.url);
+      h.attachMedia(v);
+      h.on(Hls.Events.MANIFEST_PARSED, function(){ playVid(v); });
+      h.on(Hls.Events.ERROR, function(e, d){ if(d && d.fatal) setDroneLive(false); });
+    }).catch(function(){ setDroneLive(false); });
+  }
+  function updateLiveBadges(){
+    var on = droneLive.on;
+    var src = document.getElementById("wallDroneSrc"), cr = document.getElementById("wallDroneCredit"), note = document.getElementById("liveDroneNote"), tag = document.getElementById("liveDroneTag");
+    if(src){ src.textContent = on ? "\u25CF IN DIRETTA" : "Riprese APR PCGL"; src.className = on ? "ml-auto font-bold bg-red-600 text-white px-2 py-0.5 rounded-md" : "ml-auto text-white/60"; }
+    if(cr) cr.textContent = on ? "DJI Mavic 3E \u00B7 diretta (qualche secondo di ritardo)" : "DJI Mavic 3E \u00B7 Maratea";
+    if(tag) tag.textContent = on ? "IN DIRETTA" : "REC";
+    if(note) note.textContent = on
+      ? "In questo momento l'APR (DJI Mavic 3E) \u00E8 IN DIRETTA, con qualche secondo di ritardo. La Squadra Bravo mostra riprese registrate."
+      : "Le immagini dell'APR (DJI Mavic 3E) e della Squadra Bravo sono riprese PCGL registrate (Maratea), non un collegamento in diretta.";
+  }
+  function setDroneLive(on){
+    on = !!(on && droneLive.url);
+    if(on === droneLive.on) return;
+    droneLive.on = on;
+    DRONE_VIDS.forEach(function(id){ var v = document.getElementById(id); if(v && v.dataset.source) attachSource(v); });
+    updateLiveBadges();
+  }
+  function checkDroneLive(){
+    if(!droneLive.url || !window.fetch) return setDroneLive(false);
+    fetch(droneLive.url, { cache: "no-store" })
+      .then(function(r){ return r.ok ? r.text() : ""; })
+      .then(function(t){ setDroneLive(/#EXTM3U/.test(t)); }, function(){ setDroneLive(false); });
+  }
+  (function(){
+    var fromUrl = validLiveUrl(new URLSearchParams(location.search).get("live"));
+    var start = function(u){ droneLive.url = u; checkDroneLive(); setInterval(checkDroneLive, 20000); };
+    if(fromUrl) return start(fromUrl);
+    if(!window.fetch) return;
+    fetch("live.txt", { cache: "no-store" })
+      .then(function(r){ return r.ok ? r.text() : ""; })
+      .then(function(t){
+        var first = String(t || "").split(/\r?\n/).map(function(x){ return x.trim(); }).filter(function(x){ return x && x.charAt(0) !== "#"; })[0];
+        var u = validLiveUrl(first);
+        if(u) start(u);
+      }, function(){ /* nessun live.txt: solo video registrato */ });
+  })();
   function makeFeed(id, seed, vidId, start){
     var c = document.getElementById(id), ctx = c.getContext("2d");
     var f = { c:c, ctx:ctx, w:c.width, h:c.height, seed:seed, img:ctx.createImageData(c.width, c.height), vid:null, ok:false };
@@ -1523,7 +1609,7 @@
   }
   function playFeed(f){
     if(!f.vid) return;
-    if(!f.vid.getAttribute("src")) f.vid.src = DRONE_SRC;
+    attachSource(f.vid);
     var p = f.vid.play();
     if(p && p.catch) p.catch(function(){});
   }
@@ -1939,7 +2025,7 @@
     if(now - wall.last < 55) return;
     wall.last = now;
     var t = (now - wall.t0) / 1000;
-    wall.mode = WALL_MODES[Math.floor(t / 12) % WALL_MODES.length];
+    wall.mode = droneLive.on ? "standard" : WALL_MODES[Math.floor(t / 12) % WALL_MODES.length]; // in diretta: immagini vere, senza effetti
     paintFeed(wall.feed, t, wall.mode);
     if(now - wall.lastUi > 1500){ wall.lastUi = now; renderWallUi(); }
   }
@@ -2296,7 +2382,9 @@
   /* ---------- tour automatico guidato ----------
      Pulsante "Guarda il tour guidato" sulla scelta del profilo (o ?tour=1). La demo si mostra da sola:
      compila i campi e indica i pulsanti, ma NON registra nulla (niente bacheca, presenze, allerte, SOS,
-     classifica): il muro non riceve dati. A fine tour, o con "Esci", la demo riparte pulita. */
+     classifica): il muro non riceve dati. A fine tour, o con "Esci", la demo riparte pulita.
+     Voce narrante facoltativa: file tour/01.mp3 ... tour/16.mp3 accanto alla pagina (uno per passo,
+     copione in tour/copione.txt). Ogni passo dura quanto il suo audio; senza file, solo testo. */
   (function(){
     var STEPS = [
       { view: "modeselect", title: "Benvenuto nella demo PCGL", text: "In 2 minuti ti mostriamo come i volontari della Protezione Civile Gruppo Lucano usano l'app ogni giorno. Puoi uscire quando vuoi." },
@@ -2324,6 +2412,20 @@
     ];
     var STEP_MS = 7500;
     var tour = { on: false, i: 0, timer: null, paused: false, follow: null };
+    var voice = { el: null, on: true };
+    try { voice.on = localStorage.getItem("pcgl_demo_tour_audio") !== "0"; } catch(err) { /* preferenza non salvabile */ }
+    function stopVoice(){ if(voice.el){ voice.el.onloadedmetadata = null; voice.el.pause(); voice.el = null; } }
+    function audioLabel(){ var b = document.getElementById("tourAudio"); if(b) b.textContent = voice.on ? "\u{1F50A} Voce" : "\u{1F507} Voce"; }
+    // Riproduce la voce del passo e, se più lunga, allunga il passo fino alla fine della frase
+    function playVoice(i, onLonger){
+      stopVoice();
+      if(!voice.on) return;
+      var a = new Audio("tour/" + (i < 9 ? "0" : "") + (i + 1) + ".mp3");
+      voice.el = a;
+      a.onloadedmetadata = function(){ if(voice.el === a && isFinite(a.duration)) onLonger(Math.round(a.duration * 1000) + 900); };
+      a.onerror = function(){ if(voice.el === a) voice.el = null; }; // file assente: solo testo
+      var p = a.play(); if(p && p.catch) p.catch(function(){ /* autoplay bloccato: solo testo */ });
+    }
 
     var blocker = document.createElement("div");
     blocker.style.cssText = "position:fixed;inset:0;z-index:9990;display:none;background:transparent;";
@@ -2334,7 +2436,7 @@
     card.setAttribute("aria-live", "polite");
     card.style.cssText = "position:fixed;left:50%;transform:translateX(-50%);width:min(26rem,calc(100% - 2rem));z-index:9992;display:none;background:#fff;border-radius:1.6rem;box-shadow:0 25px 60px rgba(0,0,0,.3);padding:1.1rem 1.2rem;font-family:Inter,sans-serif;";
     card.innerHTML =
-      '<div style="display:flex;justify-content:space-between;align-items:center;font-size:10px;font-weight:800;text-transform:uppercase;letter-spacing:.12em;color:#9aa3ad"><span>Tour guidato</span><span id="tourCount"></span></div>' +
+      '<div style="display:flex;justify-content:space-between;align-items:center;font-size:10px;font-weight:800;text-transform:uppercase;letter-spacing:.12em;color:#9aa3ad"><span>Tour guidato</span><span style="display:flex;align-items:center;gap:.6rem"><button type="button" id="tourAudio" aria-label="Voce narrante" style="border:1px solid #e5e7eb;background:#fff;color:#003366;border-radius:999px;padding:.2rem .55rem;font-size:10px;font-weight:800;text-transform:uppercase;letter-spacing:.08em;cursor:pointer"></button><span id="tourCount"></span></span></div>' +
       '<div id="tourTitle" style="font-weight:900;font-style:italic;text-transform:uppercase;color:#003366;font-size:1.05rem;margin-top:.35rem;line-height:1.15"></div>' +
       '<p id="tourText" style="color:#4b5566;font-size:.85rem;line-height:1.45;margin:.4rem 0 .8rem"></p>' +
       '<div style="height:4px;background:#eef0f2;border-radius:99px;overflow:hidden"><div id="tourBar" style="height:100%;width:0;background:#FFCC00"></div></div>' +
@@ -2423,7 +2525,14 @@
           setTimeout(function(){ if(tour.on && tour.i === i) placeRing(findTarget(st.target)); }, 450);
           tour.follow = setInterval(function(){ if(tour.on && tour.i === i) placeRing(findTarget(st.target)); }, 600);
           var ms = st.last ? 9000 : STEP_MS;
-          if(!tour.paused){ startBar(ms); tour.timer = setTimeout(function(){ show(i + 1); }, ms); }
+          if(!tour.paused){
+            startBar(ms); tour.timer = setTimeout(function(){ show(i + 1); }, ms);
+            playVoice(i, function(voiceMs){
+              if(!tour.on || tour.i !== i || tour.paused || voiceMs <= ms) return;
+              clearTimeout(tour.timer); startBar(voiceMs);
+              tour.timer = setTimeout(function(){ show(i + 1); }, voiceMs);
+            });
+          }
         }, 250);
       });
     }
@@ -2437,6 +2546,7 @@
     }
     function stop(){
       tour.on = false;
+      stopVoice();
       clearTimeout(tour.timer); clearInterval(tour.follow);
       // riparte pulita: nessun tesserino, modulo o esercitazione lasciati a metà
       saveValue(LS_MODE, null);
@@ -2446,12 +2556,19 @@
       next.set("view", "modeselect");
       location.replace(location.pathname + "?" + next.toString());
     }
-    $("tourNext").addEventListener("click", function(){ if(STEPS[tour.i].last) stop(); else show(tour.i + 1); });
+    $("tourNext").addEventListener("click", function(){ stopVoice(); if(STEPS[tour.i].last) stop(); else show(tour.i + 1); });
+    $("tourAudio").addEventListener("click", function(){
+      voice.on = !voice.on;
+      try { localStorage.setItem("pcgl_demo_tour_audio", voice.on ? "1" : "0"); } catch(err) { /* non salvabile */ }
+      audioLabel();
+      if(!voice.on) stopVoice(); else if(tour.on && !tour.paused) show(tour.i); // riparte il passo con la voce
+    });
+    audioLabel();
     $("tourExit").addEventListener("click", stop);
     $("tourPause").addEventListener("click", function(){
       tour.paused = !tour.paused;
       this.textContent = tour.paused ? "Riprendi" : "Pausa";
-      if(tour.paused){ clearTimeout(tour.timer); var bar = $("tourBar"); bar.style.transition = "none"; bar.style.width = getComputedStyle(bar).width; }
+      if(tour.paused){ clearTimeout(tour.timer); stopVoice(); var bar = $("tourBar"); bar.style.transition = "none"; bar.style.width = getComputedStyle(bar).width; }
       else show(tour.i);
     });
     document.addEventListener("keydown", function(e){ if(tour.on && e.key === "Escape") stop(); });
