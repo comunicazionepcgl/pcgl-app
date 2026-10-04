@@ -126,6 +126,10 @@
           <div class="bg-red-50 text-red-600 p-4 rounded-2xl flex-none"><svg width="24" height="24" viewBox="0 0 24 24" fill="none"><rect x="4" y="10" width="16" height="10" rx="1.5" stroke="currentColor" stroke-width="1.7"/><path d="M8 10V6a4 4 0 0 1 8 0v4" stroke="currentColor" stroke-width="1.7"/><path d="M12 14v3" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg></div>
           <div><h3 class="font-black uppercase text-pcgl-blue text-sm">Sono un Ente / Responsabile</h3><p class="text-xs text-gray-500 mt-1">Scopri come PCGL coordina squadre, mezzi ed emergenze</p></div>
         </button>
+        <button type="button" id="btnTourStart" class="bg-pcgl-yellow rounded-[2.5rem] p-6 shadow-[0_20px_50px_rgba(255,204,0,0.25)] flex items-center gap-4 text-left active:scale-95 transition-transform">
+          <div class="bg-white/70 text-pcgl-blue p-4 rounded-2xl flex-none"><svg width="24" height="24" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="9.5" stroke="currentColor" stroke-width="1.7"/><path d="M10 8.5v7l6-3.5-6-3.5Z" fill="currentColor"/></svg></div>
+          <div><h3 class="font-black uppercase text-pcgl-blue text-sm">Guarda il tour guidato</h3><p class="text-xs text-pcgl-blue/70 mt-1">L'app si presenta da sola in 2 minuti</p></div>
+        </button>
       </div>
     </main>
   </section>
@@ -137,10 +141,16 @@
         <img src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7" data-pcgl-logo width="30" height="30" class="object-contain" alt="Logo PCGL">
         <span class="font-black italic uppercase text-pcgl-blue tracking-tighter text-lg">PCGL</span>
       </div>
-      <button type="button" id="modeSwitchBtn" class="text-[10px] font-bold text-pcgl-blue bg-blue-50 px-3 py-2 rounded-full uppercase tracking-widest flex items-center gap-1.5 active:scale-95 transition-transform">
+      <div class="flex items-center gap-2">
+        <button type="button" data-nav="modeselect" class="text-[10px] font-bold text-gray-500 bg-gray-100 px-3 py-2 rounded-full uppercase tracking-widest flex items-center gap-1.5 active:scale-95 transition-transform" aria-label="Torna alla scelta del profilo">
+          <svg width="11" height="11" viewBox="0 0 24 24" fill="none"><path d="M15 19l-7-7 7-7" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          Cambia profilo
+        </button>
+        <button type="button" id="modeSwitchBtn" class="text-[10px] font-bold text-pcgl-blue bg-blue-50 px-3 py-2 rounded-full uppercase tracking-widest flex items-center gap-1.5 active:scale-95 transition-transform">
         <span id="modeSwitchLabel">Volontario</span>
         <svg width="11" height="11" viewBox="0 0 24 24" fill="none"><path d="M4 7h13M13 3l4 4-4 4M20 17H7M11 21l-4-4 4-4" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
       </button>
+      </div>
     </header>
 
     <main class="px-6 py-8 max-w-md mx-auto w-full flex flex-col gap-8">
@@ -2282,6 +2292,173 @@
   }
   cloudInit();
 
+  /* ---------- tour automatico guidato ----------
+     Pulsante "Guarda il tour guidato" sulla scelta del profilo (o ?tour=1). La demo si mostra da sola:
+     compila i campi e indica i pulsanti, ma NON registra nulla (niente bacheca, presenze, allerte, SOS,
+     classifica): il muro non riceve dati. A fine tour, o con "Esci", la demo riparte pulita. */
+  (function(){
+    var STEPS = [
+      { view: "modeselect", title: "Benvenuto nella demo PCGL", text: "In 2 minuti ti mostriamo come i volontari della Protezione Civile Gruppo Lucano usano l'app ogni giorno. Puoi uscire quando vuoi." },
+      { view: "home", mode: "volontario", target: function(){ var t = document.querySelector('#view-home [data-nav="tesserino"]'); return t && t.parentElement; }, title: "La home del volontario", text: "Tutti gli strumenti a portata di mano: tesserino, percorso, check-in, allerte, esercitazioni." },
+      { view: "tesserino", target: function(){ var n = document.getElementById("t-nome"); return n && n.parentElement && n.parentElement.parentElement; }, title: "Il tesserino digitale", text: "Ogni volontario ha il suo: foto, sede, specializzazione e un QR personale.",
+        run: function(){ return typeInto("t-nome", "Maria").then(function(){ return typeInto("t-cognome", "Lucano"); }).then(function(){ pickOption("t-sede", 1); pickOption("t-spec", 1); }); } },
+      { view: "tesserino", target: "#tesserinoResult", title: "Pronto in un tocco", text: "Con il QR i responsabili verificano subito chi è in servizio e con quale qualifica.",
+        run: function(){ var f = document.getElementById("tesserinoForm"); if(f.requestSubmit) f.requestSubmit(); else f.dispatchEvent(new Event("submit", { cancelable: true })); } },
+      { view: "checkin", target: "#checkinForm button[type=submit], #checkinForm button", title: "Check-in", text: "Le presenze a corsi, eventi ed esercitazioni si registrano in pochi secondi, anche con il QR.",
+        run: function(){ return typeInto("c-nome", "Giuseppe").then(function(){ return typeInto("c-comune", "Matera"); }); } },
+      { view: "percorso", target: "@#view-percorso main", title: "Il percorso del volontario", text: "Dall'iscrizione al corso base, fino alle specializzazioni: AIB, logistica, sala operativa e altre." },
+      { view: "salaop", target: "#statGrid", title: "La Sala Operativa", text: "I numeri reali dell'app: volontari attivi, mezzi, sedi e interventi, aggiornati in automatico." },
+      { view: "salaop", target: "#italyMap", title: "Squadre sul territorio", text: "Squadre e operazioni a colpo d'occhio. In questa demo le posizioni sono dimostrative." },
+      { view: "allerta", target: "[data-colore=\"arancione\"]", title: "Aprire un'allerta", text: "Tipo, zona e livello di criticità in pochi tocchi. I volontari ricevono la notifica sul telefono.",
+        run: function(){ pickOption("a-tipo", 1); pickOption("a-zona", 1); var b = document.querySelector("[data-colore=\"arancione\"]"); if(b) b.click(); } },
+      { view: "allerta", target: "#btnAttivaAllerta", title: "Dall'allerta al rapporto", text: "Poi si compone la squadra, si seguono gli stati fino al rientro e si genera il rapporto d'intervento in PDF." },
+      { view: "mezzi", target: "@#view-mezzi main", title: "I mezzi", text: "Chilometri, scadenze e disponibilità di ogni veicolo, aggiornati dai volontari che li usano." },
+      { view: "live", target: "@#view-live main", title: "Immagini dal campo", text: "Le squadre e il drone inviano le immagini in diretta alla Sala Operativa." },
+      { view: "esercitazione", target: "@#exMain", title: "Esercitazione guidata", text: "Mettiti nei panni del coordinatore e gestisci un incendio boschivo, passo dopo passo.",
+        run: function(){ var b = document.getElementById("exStart"); if(b) b.click(); } },
+      { view: "esercitazione", target: "@#exMain", title: "Ogni scelta conta", text: "Ogni decisione riceve un commento e un punteggio: la classifica compare sul muro dello stand.",
+        run: function(){ var o = [].slice.call(document.querySelectorAll("[data-exopt]")).filter(function(x){ return /Preallarme/i.test(x.textContent); })[0]; if(o) o.click(); } },
+      { view: "home", target: "#btnSos", title: "SOS e assenza di rete", text: "SOS geolocalizzato con un tocco. Senza segnale l'app conserva i dati e li invia appena torna la rete." },
+      { view: "modeselect", title: "Ora tocca a te!", text: "Scegli il tuo profilo e prova la demo, oppure inquadra il QR sul muro con il tuo telefono.", last: true }
+    ];
+    var STEP_MS = 7500;
+    var tour = { on: false, i: 0, timer: null, paused: false, follow: null };
+
+    var blocker = document.createElement("div");
+    blocker.style.cssText = "position:fixed;inset:0;z-index:9990;display:none;background:transparent;";
+    var ring = document.createElement("div");
+    ring.style.cssText = "position:fixed;z-index:9991;display:none;border:4px solid #dc2626;border-radius:20px;box-shadow:0 0 0 9999px rgba(0,26,51,.35);pointer-events:none;transition:all .25s ease;";
+    var card = document.createElement("div");
+    card.setAttribute("role", "dialog");
+    card.setAttribute("aria-live", "polite");
+    card.style.cssText = "position:fixed;left:50%;transform:translateX(-50%);width:min(26rem,calc(100% - 2rem));z-index:9992;display:none;background:#fff;border-radius:1.6rem;box-shadow:0 25px 60px rgba(0,0,0,.3);padding:1.1rem 1.2rem;font-family:Inter,sans-serif;";
+    card.innerHTML =
+      '<div style="display:flex;justify-content:space-between;align-items:center;font-size:10px;font-weight:800;text-transform:uppercase;letter-spacing:.12em;color:#9aa3ad"><span>Tour guidato</span><span id="tourCount"></span></div>' +
+      '<div id="tourTitle" style="font-weight:900;font-style:italic;text-transform:uppercase;color:#003366;font-size:1.05rem;margin-top:.35rem;line-height:1.15"></div>' +
+      '<p id="tourText" style="color:#4b5566;font-size:.85rem;line-height:1.45;margin:.4rem 0 .8rem"></p>' +
+      '<div style="height:4px;background:#eef0f2;border-radius:99px;overflow:hidden"><div id="tourBar" style="height:100%;width:0;background:#FFCC00"></div></div>' +
+      '<div style="display:flex;gap:.5rem;margin-top:.8rem">' +
+        '<button type="button" id="tourExit" style="flex:1;padding:.7rem;border-radius:1rem;border:1px solid #e5e7eb;background:#fff;color:#003366;font-weight:800;font-size:.72rem;text-transform:uppercase">Esci</button>' +
+        '<button type="button" id="tourPause" style="flex:1;padding:.7rem;border-radius:1rem;border:1px solid #e5e7eb;background:#fff;color:#003366;font-weight:800;font-size:.72rem;text-transform:uppercase">Pausa</button>' +
+        '<button type="button" id="tourNext" style="flex:1.3;padding:.7rem;border-radius:1rem;border:0;background:#003366;color:#FFCC00;font-weight:900;font-size:.72rem;text-transform:uppercase">Avanti &rsaquo;</button>' +
+      '</div>';
+    document.body.appendChild(blocker); document.body.appendChild(ring); document.body.appendChild(card);
+    var $ = function(id){ return document.getElementById(id); };
+
+    function typeInto(id, text){
+      var el = $(id);
+      if(!el) return Promise.resolve();
+      el.value = "";
+      return new Promise(function(done){
+        var k = 0;
+        (function next(){
+          if(!tour.on) return done();
+          el.value = text.slice(0, ++k);
+          el.dispatchEvent(new Event("input", { bubbles: true }));
+          if(k < text.length) setTimeout(next, 70); else done();
+        })();
+      });
+    }
+    function pickOption(id, idx){
+      var el = $(id);
+      if(el && el.options && el.options.length > idx){ el.selectedIndex = idx; el.dispatchEvent(new Event("change", { bubbles: true })); }
+    }
+    function findTarget(sel){
+      if(!sel) return null;
+      if(typeof sel === "function"){ var f = sel(); return f && f.getClientRects().length > 0 ? f : null; }
+      if(sel.charAt(0) === "@"){
+        var box = document.querySelector(sel.slice(1));
+        if(!box || !box.getClientRects().length) return null;
+        // scende nel contenitore finché trova un blocco visibile alto tra 80 px e il 55% dello schermo
+        var queue = [].slice.call(box.children);
+        while(queue.length){
+          var c = queue.shift(), h = c.getBoundingClientRect().height;
+          if(!c.getClientRects().length) continue;
+          if(h >= 80 && h <= innerHeight * 0.55) return c;
+          if(h > innerHeight * 0.55) queue = [].slice.call(c.children).concat(queue);
+        }
+        return box;
+      }
+      var parts = sel.split(/\s*,\s*/);
+      for(var i = 0; i < parts.length; i++){ var el = document.querySelector(parts[i]); if(el && el.getClientRects().length > 0) return el; /* vale anche per gli elementi fissi (es. SOS) */ }
+      return null;
+    }
+    function placeRing(el){
+      if(!el){ ring.style.display = "none"; card.style.top = ""; card.style.bottom = "1.2rem"; return; }
+      var r = el.getBoundingClientRect(), pad = 8;
+      var top = Math.max(4, r.top - pad), h = Math.min(innerHeight - 8, r.height + pad * 2);
+      ring.style.display = "block";
+      ring.style.left = Math.max(4, r.left - pad) + "px";
+      ring.style.top = top + "px";
+      ring.style.width = Math.min(innerWidth - 8, r.width + pad * 2) + "px";
+      ring.style.height = h + "px";
+      // il riquadro va dalla parte opposta all'elemento evidenziato
+      if(r.top + r.height / 2 > innerHeight / 2){ card.style.bottom = ""; card.style.top = "1.2rem"; }
+      else { card.style.top = ""; card.style.bottom = "1.2rem"; }
+    }
+    function startBar(ms){
+      var bar = $("tourBar");
+      bar.style.transition = "none"; bar.style.width = "0";
+      void bar.offsetWidth;
+      bar.style.transition = "width " + ms + "ms linear"; bar.style.width = "100%";
+    }
+    function show(i){
+      clearTimeout(tour.timer); clearInterval(tour.follow);
+      if(i >= STEPS.length) return stop();
+      tour.i = i;
+      var st = STEPS[i];
+      if(st.mode && typeof setMode === "function") setMode(st.mode);
+      showView(st.view);
+      $("tourCount").textContent = (i + 1) + " / " + STEPS.length;
+      $("tourTitle").textContent = st.title;
+      $("tourText").textContent = st.text;
+      $("tourNext").innerHTML = st.last ? "Inizia &rsaquo;" : "Avanti &rsaquo;";
+      Promise.resolve(st.run ? st.run() : null).then(function(){
+        if(!tour.on || tour.i !== i) return;
+        setTimeout(function(){
+          if(!tour.on || tour.i !== i) return;
+          var el = findTarget(st.target);
+          if(el) el.scrollIntoView({ block: "center", behavior: "smooth" });
+          setTimeout(function(){ if(tour.on && tour.i === i) placeRing(findTarget(st.target)); }, 450);
+          tour.follow = setInterval(function(){ if(tour.on && tour.i === i) placeRing(findTarget(st.target)); }, 600);
+          var ms = st.last ? 9000 : STEP_MS;
+          if(!tour.paused){ startBar(ms); tour.timer = setTimeout(function(){ show(i + 1); }, ms); }
+        }, 250);
+      });
+    }
+    function start(){
+      if(tour.on) return;
+      tour.on = true; tour.paused = false;
+      window.__pcglTour = true;
+      blocker.style.display = "block"; card.style.display = "block";
+      $("tourPause").textContent = "Pausa";
+      show(0);
+    }
+    function stop(){
+      tour.on = false;
+      clearTimeout(tour.timer); clearInterval(tour.follow);
+      // riparte pulita: nessun tesserino, modulo o esercitazione lasciati a metà
+      saveValue(LS_MODE, null);
+      var cur = new URLSearchParams(location.search), next = new URLSearchParams();
+      if(cur.get("kiosk")) next.set("kiosk", cur.get("kiosk"));
+      if(cur.get("s")) next.set("s", cur.get("s"));
+      next.set("view", "modeselect");
+      location.replace(location.pathname + "?" + next.toString());
+    }
+    $("tourNext").addEventListener("click", function(){ if(STEPS[tour.i].last) stop(); else show(tour.i + 1); });
+    $("tourExit").addEventListener("click", stop);
+    $("tourPause").addEventListener("click", function(){
+      tour.paused = !tour.paused;
+      this.textContent = tour.paused ? "Riprendi" : "Pausa";
+      if(tour.paused){ clearTimeout(tour.timer); var bar = $("tourBar"); bar.style.transition = "none"; bar.style.width = getComputedStyle(bar).width; }
+      else show(tour.i);
+    });
+    document.addEventListener("keydown", function(e){ if(tour.on && e.key === "Escape") stop(); });
+    window.addEventListener("resize", function(){ if(tour.on) placeRing(findTarget(STEPS[tour.i].target)); });
+    $("btnTourStart").addEventListener("click", start);
+    if(new URLSearchParams(location.search).get("tour") === "1") setTimeout(start, 600);
+  })();
+
   /* ---------- modalita' chiosco (tablet dello stand): attiva solo con ?kiosk=1 ----------
      Dopo 75 secondi senza tocchi chiede "Sei ancora qui?"; se nessuno risponde entro 10 secondi
      ricarica la demo da capo, così il visitatore successivo non trova tesserino, foto o allerta
@@ -2405,7 +2582,7 @@
     function isShowing(){ return show.style.display === "block"; }
     function startShow(){
       findSlides(function(list){
-        if(!list.length || currentView() !== "modeselect" || isOpen() || isShowing()) return;
+        if(!list.length || window.__pcglTour || currentView() !== "modeselect" || isOpen() || isShowing()) return;
         if(!order.length) shuffle();
         moveStart = null;
         loadNext(function(first){
@@ -2485,6 +2662,7 @@
     }
     function arm(){
       clearTimeout(idleTimer);
+      if(window.__pcglTour) return; // il tour si gestisce da solo
       var v = currentView();
       if(v === "wall") return; // il muro resta sempre acceso
       if(v === "modeselect"){ // schermata iniziale già "pulita": dopo un po' partono le foto
