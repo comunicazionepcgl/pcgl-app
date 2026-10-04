@@ -77,6 +77,7 @@
   .qr-box canvas{ display:block; width:100%; height:100%; }
   .leaflet-container{ font-family:'Inter', ui-sans-serif, system-ui, sans-serif; z-index:0; }
   .fx-termica{ filter:url(#fxThermal); }
+  .fx-zoom{ transform:scale(2.2); transform-origin:50% 42%; } /* camera tele del DJI Mavic 3E */
   .fx-notturna{ filter:url(#fxNight) brightness(1.25) contrast(1.15); }
   @media print{
     body.printing-report > *:not(#reportModal){ display:none !important; }
@@ -461,7 +462,7 @@
 
     <main class="px-6 pb-16 max-w-3xl mx-auto w-full flex flex-col gap-5">
       <div class="bg-amber-50 border border-amber-200 rounded-2xl p-4 text-xs text-amber-900 leading-relaxed">
-        <strong>Funzionalit&agrave; in anteprima: non &egrave; ancora presente nell'app.</strong> Le immagini del drone e della Squadra Bravo sono un filmato di repertorio (esercitazione antincendio, &copy; Jared Eglinski, licenza CC BY 3.0, Wikimedia Commons), non un collegamento reale. La camera della Squadra Alfa &egrave; la tua e il video resta sul tuo dispositivo: non viene inviato n&eacute; salvato da nessuna parte.
+        <strong>Funzionalit&agrave; in anteprima: non &egrave; ancora presente nell'app.</strong> Le immagini dell'APR (DJI Mavic 3E) e della Squadra Bravo sono riprese PCGL registrate (Maratea), non un collegamento in diretta. La camera della Squadra Alfa &egrave; la tua e il video resta sul tuo dispositivo: non viene inviato n&eacute; salvato da nessuna parte.
       </div>
 
       <div class="relative rounded-3xl overflow-hidden bg-black shadow-card border border-gray-200 aspect-video">
@@ -469,7 +470,7 @@
         <canvas id="liveDrone" width="192" height="108" class="w-full h-full block"></canvas>
         <div class="absolute inset-0 pointer-events-none p-3 flex flex-col justify-between text-white font-mono text-[10px] leading-tight" style="text-shadow:0 1px 3px rgba(0,0,0,.9)">
           <div class="flex justify-between items-start gap-2">
-            <span class="flex items-center gap-1.5"><i class="w-2 h-2 rounded-full bg-red-500 animate-pulse inline-block"></i>REC &middot; DRONE 01 &middot; <span id="liveModeLabel">STANDARD</span></span>
+            <span class="flex items-center gap-1.5"><i class="w-2 h-2 rounded-full bg-red-500 animate-pulse inline-block"></i>REC &middot; APR DJI MAVIC 3E &middot; <span id="liveModeLabel">STANDARD</span></span>
             <span id="liveClock">--:--:--</span>
           </div>
           <div class="flex justify-between items-end gap-2">
@@ -486,7 +487,7 @@
 
       <div class="flex flex-wrap items-center gap-2">
         <button type="button" data-livemode="standard" class="px-3 py-2 rounded-full border border-pcgl-yellow bg-pcgl-yellow text-[11px] font-black uppercase text-pcgl-blue">Standard</button>
-        <button type="button" data-livemode="termica" class="px-3 py-2 rounded-full border border-gray-200 bg-white text-[11px] font-bold uppercase text-gray-500">Termica</button>
+        <button type="button" data-livemode="zoom" class="px-3 py-2 rounded-full border border-gray-200 bg-white text-[11px] font-bold uppercase text-gray-500">Zoom</button>
         <button type="button" data-livemode="notturna" class="px-3 py-2 rounded-full border border-gray-200 bg-white text-[11px] font-bold uppercase text-gray-500">Notturna</button>
         <button type="button" id="btnLiveShot" class="ml-auto px-4 py-2 rounded-full bg-pcgl-blue text-white text-[11px] font-black uppercase active:scale-95 transition-transform">Cattura fotogramma</button>
       </div>
@@ -514,7 +515,7 @@
             <canvas id="liveBravo" width="96" height="54" class="w-full h-full block"></canvas>
             <div class="absolute top-1.5 left-2 text-[9px] font-mono text-white flex items-center gap-1" style="text-shadow:0 1px 2px rgba(0,0,0,.9)"><i class="w-1.5 h-1.5 rounded-full bg-green-400 inline-block"></i>SQUADRA BRAVO &middot; SIM</div>
           </div>
-          <div class="text-[10px] text-gray-400 text-center py-2.5">Filmato di repertorio</div>
+          <div class="text-[10px] text-gray-400 text-center py-2.5">Riprese registrate</div>
         </div>
       </div>
 
@@ -573,8 +574,8 @@
           <video id="wallDroneVideo" class="w-full h-full object-cover block" muted loop playsinline preload="none" hidden></video>
           <canvas id="wallDrone" width="192" height="108" class="w-full h-full block"></canvas>
           <div class="absolute inset-0 pointer-events-none p-3 flex flex-col justify-between font-mono text-[11px]" style="text-shadow:0 1px 3px rgba(0,0,0,.9)">
-            <div class="flex items-center gap-2"><i class="w-2 h-2 rounded-full bg-red-500 animate-pulse inline-block"></i><span id="wallDroneLabel">DRONE 01</span><span class="ml-auto text-white/60">Filmato di repertorio</span></div>
-            <div class="flex justify-between items-end gap-2"><span id="wallDroneTele">ALT -- m</span><span class="text-[9px] text-white/50">Video: J. Eglinski, CC BY 3.0</span></div>
+            <div class="flex items-center gap-2"><i class="w-2 h-2 rounded-full bg-red-500 animate-pulse inline-block"></i><span id="wallDroneLabel">APR DJI MAVIC 3E</span><span class="ml-auto text-white/60">Riprese APR PCGL</span></div>
+            <div class="flex justify-between items-end gap-2"><span id="wallDroneTele">ALT -- m</span><span class="text-[9px] text-white/50">DJI Mavic 3E &middot; Maratea</span></div>
           </div>
         </div>
         <div id="wallStats" class="grid grid-cols-2 gap-3 flex-none"></div>
@@ -1527,7 +1528,7 @@
     if(p && p.catch) p.catch(function(){});
   }
   function pauseFeed(f){ if(f && f.vid) f.vid.pause(); }
-  /* Se il filmato è disponibile lo mostra (con filtro termico/notturno), altrimenti disegna il feed procedurale. */
+  /* Se il filmato è disponibile lo mostra (con zoom o filtro notturno), altrimenti disegna il feed procedurale. */
   function paintFeed(f, t, mode){
     var useVid = !!(f.vid && f.ok && !isOffline());
     if(f.vid){ f.vid.hidden = !useVid; f.c.hidden = useVid; }
@@ -1560,7 +1561,7 @@
   }
   function updateTelemetry(t){
     var alt = Math.round(118 + 6 * Math.sin(t * 0.3)), spd = Math.round(32 + 5 * Math.sin(t * 0.5));
-    var lat = (40.6427 + 0.002 * Math.sin(t * 0.2)).toFixed(4), lng = (15.8069 + 0.003 * Math.cos(t * 0.17)).toFixed(4);
+    var lat = (39.9925 + 0.002 * Math.sin(t * 0.2)).toFixed(4), lng = (15.7107 + 0.003 * Math.cos(t * 0.17)).toFixed(4); /* Cristo Redentore di Maratea, dove sono state girate le riprese */
     var batt = Math.max(12, Math.floor(87 - t * 0.03));
     document.getElementById("liveClock").textContent = new Date().toLocaleTimeString("it-IT");
     document.getElementById("liveTelemetry").textContent = "ALT " + alt + " m - " + spd + " km/h";
@@ -1617,11 +1618,11 @@
     try { x.filter = "none"; } catch(err) { /* nessun filtro attivo */ }
     x.fillStyle = "rgba(0,0,0,.55)"; x.fillRect(0, 240, 480, 30);
     x.fillStyle = "#ffffff"; x.font = "12px monospace";
-    x.fillText("DRONE 01 - " + new Date().toLocaleTimeString("it-IT") + " - " + document.getElementById("liveCoords").textContent, 8, 259);
+    x.fillText("APR DJI Mavic 3E - " + new Date().toLocaleTimeString("it-IT") + " - " + document.getElementById("liveCoords").textContent, 8, 259);
     var host = document.getElementById("liveShots");
     if(host.getAttribute("data-empty") === "1"){ host.innerHTML = ""; host.setAttribute("data-empty", "0"); }
     var img = document.createElement("img");
-    img.src = c.toDataURL("image/jpeg", 0.8); img.alt = "Fotogramma catturato dal drone";
+    img.src = c.toDataURL("image/jpeg", 0.8); img.alt = "Fotogramma catturato dall'APR DJI Mavic 3E";
     img.className = "w-full rounded-xl border border-gray-100 shadow-card";
     host.insertBefore(img, host.firstChild);
     while(host.children.length > 6) host.removeChild(host.lastChild);
@@ -1844,7 +1845,7 @@
 
   /* ---------- sala a muro (schermo dello stand) ---------- */
   var wall = { running: false, raf: 0, last: 0, lastUi: 0, t0: 0, feed: null, map: null, sosDrawn: 0, sosKeys: {}, sosTimer: null, mode: "standard" };
-  var WALL_MODES = ["standard", "termica", "notturna"];
+  var WALL_MODES = ["standard", "zoom", "notturna"];
 
   function activityItems(){
     var wd = wallData();
@@ -1905,7 +1906,7 @@
     chip.className = "px-3 py-1.5 rounded-full text-[10px] font-black uppercase tracking-widest " + (cloud.live ? "bg-green-500 text-white" : "bg-white/10 text-white/70");
     document.getElementById("wallClock").textContent = d.toLocaleTimeString("it-IT", {hour: "2-digit", minute: "2-digit"});
     document.getElementById("wallDate").textContent = d.toLocaleDateString("it-IT", {weekday: "long", day: "numeric", month: "long"});
-    document.getElementById("wallDroneLabel").textContent = "DRONE 01 - " + wall.mode.toUpperCase();
+    document.getElementById("wallDroneLabel").textContent = "APR DJI MAVIC 3E - " + wall.mode.toUpperCase();
     var t = (performance.now() - wall.t0) / 1000;
     document.getElementById("wallDroneTele").textContent = "ALT " + Math.round(118 + 6 * Math.sin(t * 0.3)) + " m - " + Math.round(32 + 5 * Math.sin(t * 0.5)) + " km/h";
     function tile(n, l, tag){
@@ -2313,7 +2314,7 @@
         run: function(){ pickOption("a-tipo", 1); pickOption("a-zona", 1); var b = document.querySelector("[data-colore=\"arancione\"]"); if(b) b.click(); } },
       { view: "allerta", target: "#btnAttivaAllerta", title: "Dall'allerta al rapporto", text: "Poi si compone la squadra, si seguono gli stati fino al rientro e si genera il rapporto d'intervento in PDF." },
       { view: "mezzi", target: "@#view-mezzi main", title: "I mezzi", text: "Chilometri, scadenze e disponibilità di ogni veicolo, aggiornati dai volontari che li usano." },
-      { view: "live", target: "@#view-live main", title: "Immagini dal campo", text: "Le squadre e il drone inviano le immagini in diretta alla Sala Operativa." },
+      { view: "live", target: "@#view-live main", title: "Immagini dal campo", text: "Le squadre e l'APR DJI Mavic 3E inviano le immagini alla Sala Operativa (qui riprese registrate a Maratea)." },
       { view: "esercitazione", target: "@#exMain", title: "Esercitazione guidata", text: "Mettiti nei panni del coordinatore e gestisci un incendio boschivo, passo dopo passo.",
         run: function(){ var b = document.getElementById("exStart"); if(b) b.click(); } },
       { view: "esercitazione", target: "@#exMain", title: "Ogni scelta conta", text: "Ogni decisione riceve un commento e un punteggio: la classifica compare sul muro dello stand.",
