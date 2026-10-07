@@ -36,9 +36,9 @@ if (-not (Test-Path $fotoDir)) { throw "Cartella non trovata: $fotoDir" }
 New-Item -ItemType Directory -Force $origDir | Out-Null
 
 # Foto già numerate e foto nuove
-$numerate = Get-ChildItem $fotoDir -File | Where-Object { $_.Name -match '^\d{2,3}\.jpg$' }
+$numerate = Get-ChildItem $fotoDir -File | Where-Object { $_.Name -match '^\d{2,4}\.jpg$' }
 $nuove = Get-ChildItem $fotoDir -File |
-    Where-Object { $_.Extension -match '^\.(jpe?g|png)$' -and $_.Name -notmatch '^\d{2,3}\.jpg$' } |
+    Where-Object { $_.Extension -match '^\.(jpe?g|png)$' -and $_.Name -notmatch '^\d{2,4}\.jpg$' } |
     Sort-Object Name
 
 # Formati non gestiti (es. .heic degli iPhone): segnalati, non toccati
@@ -72,7 +72,7 @@ for ($i = 0; $i -lt $numeri.Count; $i++) {
 if (-not $nuove) { [IO.File]::WriteAllText((Join-Path $fotoDir 'totale.txt'), [string]$numerate.Count, $utf8); Write-Host "Nessuna foto nuova in $fotoDir ($($numerate.Count) già numerate; totale.txt aggiornato)."; return }
 
 $prossimo = if ($numeri.Count) { [int](($numeri | Measure-Object -Maximum).Maximum) + 1 } else { 1 }
-if ($prossimo + $nuove.Count - 1 -gt 999) { throw "Troppe foto: la presentazione ne gestisce al massimo 999." }
+if ($prossimo + $nuove.Count - 1 -gt 9999) { throw "Troppe foto: la presentazione ne gestisce al massimo 9999." }
 
 $jpegCodec = [System.Drawing.Imaging.ImageCodecInfo]::GetImageEncoders() | Where-Object { $_.MimeType -eq 'image/jpeg' }
 $encParams = New-Object System.Drawing.Imaging.EncoderParameters 1
