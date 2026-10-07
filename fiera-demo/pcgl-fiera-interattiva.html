@@ -132,6 +132,11 @@
           <div><h3 class="font-black uppercase text-pcgl-blue text-sm">Guarda il tour guidato</h3><p class="text-xs text-pcgl-blue/70 mt-1">L'app si presenta da sola in 2 minuti</p></div>
         </button>
       </div>
+      <a href="https://www.formazionesicurezza.org/index.html" target="_blank" rel="noopener" class="credit-fs flex flex-col items-center gap-1 text-center mt-2 px-5 py-3 rounded-2xl bg-white border border-gray-100 shadow-card">
+        <span class="text-[10px] font-bold uppercase tracking-widest text-gray-400">App e sito realizzati da</span>
+        <span class="text-base font-black text-pcgl-blue">formazionesicurezza.org</span>
+        <span class="text-[11px] text-gray-500">Antonio Mangiamele</span>
+      </a>
     </main>
   </section>
 
@@ -546,6 +551,7 @@
           <div class="text-[11px] font-black uppercase tracking-[.2em] text-pcgl-yellow">Protezione Civile Gruppo Lucano</div>
           <div class="text-2xl font-black italic uppercase leading-none">Sala Operativa</div>
         </div>
+        <div class="ml-4 pl-4 border-l border-white/15 leading-tight"><div class="text-[9px] font-bold uppercase tracking-widest text-white/50">App e sito realizzati da</div><div class="text-sm font-black text-pcgl-yellow">formazionesicurezza.org</div></div>
       </div>
       <div class="flex items-center gap-6">
         <div id="wallCloud" class="px-3 py-1.5 rounded-full text-[10px] font-black uppercase tracking-widest bg-white/10 text-white/70">Solo questo dispositivo</div>
@@ -2408,7 +2414,7 @@
       { view: "esercitazione", target: "@#exMain", title: "Ogni scelta conta", text: "Ogni decisione riceve un commento e un punteggio: la classifica compare sul muro dello stand.",
         run: function(){ var o = [].slice.call(document.querySelectorAll("[data-exopt]")).filter(function(x){ return /Preallarme/i.test(x.textContent); })[0]; if(o) o.click(); } },
       { view: "home", target: "#btnSos", title: "SOS e assenza di rete", text: "SOS geolocalizzato con un tocco. Senza segnale l'app conserva i dati e li invia appena torna la rete." },
-      { view: "modeselect", title: "Ora tocca a te!", text: "Scegli il tuo profilo e prova la demo, oppure inquadra il QR sul muro con il tuo telefono.", last: true }
+      { view: "modeselect", target: ".credit-fs", title: "Ora tocca a te!", text: "Scegli il tuo profilo e prova la demo, oppure inquadra il QR sul muro con il tuo telefono. App e sito realizzati da formazionesicurezza.org.", last: true }
     ];
     var STEP_MS = 7500;
     var tour = { on: false, i: 0, timer: null, paused: false, follow: null };
@@ -2552,6 +2558,7 @@
       saveValue(LS_MODE, null);
       var cur = new URLSearchParams(location.search), next = new URLSearchParams();
       if(cur.get("kiosk")) next.set("kiosk", cur.get("kiosk"));
+      if(cur.get("auto")) next.set("auto", cur.get("auto"));
       if(cur.get("s")) next.set("s", cur.get("s"));
       next.set("view", "modeselect");
       location.replace(location.pathname + "?" + next.toString());
@@ -2574,6 +2581,9 @@
     document.addEventListener("keydown", function(e){ if(tour.on && e.key === "Escape") stop(); });
     window.addEventListener("resize", function(){ if(tour.on) placeRing(findTarget(STEPS[tour.i].target)); });
     $("btnTourStart").addEventListener("click", start);
+    window.__pcglStartTour = start;
+    // In modalità autogestita il visitatore che tocca lo schermo interrompe il tour e usa la demo
+    blocker.addEventListener("click", function(){ if(window.__pcglAuto && tour.on) stop(); });
     if(new URLSearchParams(location.search).get("tour") === "1") setTimeout(start, 600);
   })();
 
@@ -2589,7 +2599,12 @@
      una riga per foto (riga 1 = 01.jpg). Un tocco o un movimento del mouse chiude la presentazione. */
   (function(){
     var params = new URLSearchParams(location.search);
-    if(params.get("kiosk") !== "1") return;
+    var AUTO = params.get("auto") === "1";
+    if(params.get("kiosk") !== "1" && !AUTO) return;
+    window.__pcglAuto = AUTO;
+    // Modalità autogestita: dopo AUTO_SHOW_MS di foto e locandine parte il tour guidato,
+    // a fine tour si torna alla scelta del profilo e il ciclo ricomincia.
+    var AUTO_SHOW_MS = 150000, autoTimer = null;
     var IDLE_MS = 75000, COUNTDOWN = 10;
     var idleTimer = null, countdownTimer = null, left = 0;
 
@@ -2607,7 +2622,7 @@
     document.body.appendChild(overlay);
     var leftEl = document.getElementById("kioskLeft");
 
-    var ATTRACT_MS = 20000, SLIDE_MS = 7000, FOTO_DIR = "foto/";
+    var ATTRACT_MS = AUTO ? 15000 : 20000, SLIDE_MS = 7000, FOTO_DIR = "foto/";
     var slides = null, slideIdx = 0, slideTimer = null, front = 0;
     var show = document.createElement("div");
     show.id = "kioskShow";
@@ -2624,6 +2639,7 @@
           (logoSrc ? '<img src="' + logoSrc + '" alt="" style="width:28px;height:28px;object-fit:contain">' : '') +
           'Tocca lo schermo per provare la demo' +
         '</div>' +
+        '<div style="margin-top:.7rem;font-size:.75rem;font-weight:700;color:rgba(255,255,255,.75)">App e sito realizzati da <span style="color:#FFCC00">formazionesicurezza.org</span></div>' +
       '</div>';
     document.body.appendChild(show);
     var layers = show.querySelectorAll(".kf");
@@ -2665,7 +2681,24 @@
       for(var i = order.length - 1; i > 0; i--){ var j = Math.floor(Math.random() * (i + 1)); var t = order[i]; order[i] = order[j]; order[j] = t; }
       orderPos = 0;
     }
+    // Locandine del sito (pcgl.it/reas/locandine): una pagina ogni 4 foto, in ordine
+    var LOC_BASE = "https://pcgl.it/reas/locandine/img/";
+    var LOC_LINK = "sfoglia tutto su pcgl.it/reas/locandine";
+    var LOCANDINE = [];
+    (function(){
+      var p2 = function(n){ return (n < 10 ? "0" : "") + n; };
+      for(var b = 1; b <= 4; b++) LOCANDINE.push({ src: LOC_BASE + "brochure-p" + b + ".jpg", cap: "Brochure PCGL \u00B7 pannello " + b + " di 4 \u00B7 " + LOC_LINK, contain: true });
+      for(var o = 1; o <= 20; o++) LOCANDINE.push({ src: LOC_BASE + "opuscolo-" + p2(o) + ".jpg", cap: "Opuscolo istituzionale \u00B7 pagina " + o + " di 20 \u00B7 " + LOC_LINK, contain: true });
+      for(var m = 1; m <= 20; m++) LOCANDINE.push({ src: LOC_BASE + "moduli-" + p2(m) + ".jpg", cap: "Moduli operativi \u00B7 scheda " + m + " di 20 \u00B7 " + LOC_LINK, contain: true });
+    })();
+    var LOC_EVERY = 4, slideCount = 0, locPos = 0;
     function nextSlide(){
+      slideCount++;
+      if(LOCANDINE.length && slideCount % (LOC_EVERY + 1) === 0){
+        var l = LOCANDINE[locPos % LOCANDINE.length]; locPos++;
+        return l;
+      }
+      if(!slides.length) { var l2 = LOCANDINE[locPos % LOCANDINE.length]; locPos++; return l2; }
       if(orderPos >= order.length) shuffle();
       return slides[order[orderPos++]];
     }
@@ -2681,6 +2714,10 @@
     }
     function paint(sl){
       var cur = layers[front], next = layers[1 - front];
+      next.style.objectFit = sl.contain ? "contain" : "cover";
+      // le locandine (verticali) restano sopra didascalia e pulsante, intere
+      next.style.height = sl.contain ? "calc(100% - 9.5rem)" : "100%";
+      next.style.top = sl.contain ? "1rem" : "0";
       next.src = sl.src;
       next.style.transition = "none"; next.style.transform = "scale(1.06)";
       void next.offsetWidth; // riparte l'effetto di zoom lento
@@ -2700,19 +2737,22 @@
     function isShowing(){ return show.style.display === "block"; }
     function startShow(){
       findSlides(function(list){
-        if(!list.length || window.__pcglTour || currentView() !== "modeselect" || isOpen() || isShowing()) return;
-        if(!order.length) shuffle();
+        if((!list.length && !LOCANDINE.length) || window.__pcglTour || currentView() !== "modeselect" || isOpen() || isShowing()) return;
+        if(!order.length && list.length) shuffle();
         moveStart = null;
         loadNext(function(first){
           if(currentView() !== "modeselect" || isOpen() || isShowing()) return;
           show.style.display = "block";
           paint(first);
+          clearTimeout(autoTimer);
+          if(AUTO && window.__pcglStartTour) autoTimer = setTimeout(function(){ if(isShowing()){ stopShow(); window.__pcglStartTour(); } }, AUTO_SHOW_MS);
           clearInterval(slideTimer);
           if(list.length > 1) slideTimer = setInterval(advance, SLIDE_MS);
         });
       });
     }
     function stopShow(){
+      clearTimeout(autoTimer);
       show.style.display = "none";
       clearInterval(slideTimer);
     }
@@ -2758,6 +2798,7 @@
       saveValue(LS_ALLERTA, null);
       var next = new URLSearchParams();
       next.set("kiosk", "1");
+      if(AUTO) next.set("auto", "1");
       next.set("view", "modeselect");
       if(params.get("s")) next.set("s", params.get("s"));
       location.replace(location.pathname + "?" + next.toString());

@@ -1,0 +1,107 @@
+<!doctype html>
+<!--
+  AVVIO DELLO STAND PCGL - REAS 2026
+  Pagina per chi gestisce lo stand: un tocco e lo schermo si autogestisce.
+  - "Tablet visitatori": demo in modalità autogestita (foto e locandine, tour guidato, demo interattiva).
+  - "Schermo grande": muro della Sala Operativa.
+  Lo schermo intero e il blocco dello spegnimento valgono per tutta la sessione: la demo gira in un
+  riquadro interno, quindi i suoi riavvii automatici non fanno uscire dallo schermo intero.
+  Da caricare su pcgl.it/reas/stand.html (accanto a index.html).
+-->
+<html lang="it">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="author" content="Antonio Mangiamele - formazionesicurezza.org">
+<title>Avvia lo stand PCGL</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800;900&display=swap" rel="stylesheet">
+<style>
+  :root{ --blue:#003366; --blue2:#00224d; --yellow:#FFCC00; color-scheme: light; }
+  *{ box-sizing:border-box; }
+  html,body{ margin:0; height:100%; }
+  body{ background:linear-gradient(160deg,var(--blue),var(--blue2)); color:#fff; font-family:Inter,system-ui,sans-serif; }
+  #menu{ min-height:100%; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:1.4rem; padding:1.5rem 1rem; text-align:center; }
+  h1{ margin:0; font-size:clamp(1.6rem,4vw,2.6rem); font-weight:900; font-style:italic; text-transform:uppercase; letter-spacing:-.01em; }
+  .sub{ margin:0; color:rgba(255,255,255,.75); font-size:1rem; max-width:34rem; line-height:1.5; }
+  .scelte{ display:flex; flex-wrap:wrap; gap:1rem; justify-content:center; width:100%; max-width:46rem; }
+  button.go{ flex:1 1 18rem; border:0; border-radius:2rem; padding:1.6rem 1.4rem; cursor:pointer; text-align:left; display:flex; gap:1rem; align-items:center; box-shadow:0 20px 50px rgba(0,0,0,.25); font-family:inherit; transition:transform .15s; }
+  button.go:active{ transform:scale(.97); }
+  button.go.primary{ background:var(--yellow); color:var(--blue); }
+  button.go.second{ background:#fff; color:var(--blue); }
+  .ico{ flex:none; width:3.6rem; height:3.6rem; border-radius:1.1rem; display:flex; align-items:center; justify-content:center; background:rgba(0,51,102,.08); }
+  .go b{ display:block; font-size:1.2rem; font-weight:900; text-transform:uppercase; }
+  .go span{ display:block; font-size:.85rem; opacity:.75; margin-top:.25rem; line-height:1.35; }
+  .note{ font-size:.8rem; color:rgba(255,255,255,.6); max-width:36rem; line-height:1.5; }
+  .credit{ margin-top:.6rem; color:#fff; text-decoration:none; display:flex; flex-direction:column; align-items:center; gap:.15rem; padding:.8rem 1.4rem; border-radius:1.2rem; background:rgba(255,255,255,.08); border:1px solid rgba(255,255,255,.15); }
+  .credit small{ font-size:.65rem; font-weight:700; text-transform:uppercase; letter-spacing:.14em; color:rgba(255,255,255,.6); }
+  .credit strong{ color:var(--yellow); font-size:1.15rem; font-weight:900; }
+  #frame{ position:fixed; inset:0; width:100%; height:100%; border:0; display:none; background:#000; }
+  #esci{ position:fixed; top:4px; left:50%; transform:translateX(-50%); z-index:5; width:40px; height:40px; border-radius:999px; border:0; background:rgba(0,0,0,.06); color:transparent; display:none; cursor:pointer; }
+</style>
+</head>
+<body>
+  <main id="menu">
+    <svg width="64" height="58" viewBox="0 0 64 58" aria-hidden="true"><path d="M32 3 L61 55 H3 Z" fill="#FFCC00" stroke="#00224d" stroke-width="2"/><circle cx="32" cy="38" r="9" fill="#003366"/></svg>
+    <h1>Avvia lo stand PCGL</h1>
+    <p class="sub">Un tocco e lo schermo si gestisce da solo: foto e locandine, tour guidato e demo per i visitatori.</p>
+    <div class="scelte">
+      <button type="button" class="go primary" data-url="index.html?kiosk=1&amp;auto=1&amp;view=modeselect">
+        <div class="ico"><svg width="30" height="30" viewBox="0 0 24 24" fill="none"><rect x="5" y="2.5" width="14" height="19" rx="2.5" stroke="#003366" stroke-width="1.8"/><circle cx="12" cy="18" r="1" fill="#003366"/></svg></div>
+        <div><b>Tablet visitatori</b><span>Demo autogestita: foto, locandine e tour; un tocco e il visitatore la prova.</span></div>
+      </button>
+      <button type="button" class="go second" data-url="index.html?kiosk=1&amp;view=wall">
+        <div class="ico"><svg width="30" height="30" viewBox="0 0 24 24" fill="none"><rect x="2.5" y="4" width="19" height="12.5" rx="2" stroke="#003366" stroke-width="1.8"/><path d="M8 20.5h8M12 16.5v4" stroke="#003366" stroke-width="1.8" stroke-linecap="round"/></svg></div>
+        <div><b>Schermo grande</b><span>Sala Operativa a muro: mappa, diretta APR, attività dei visitatori, QR.</span></div>
+      </button>
+    </div>
+    <p class="note">Lo schermo resta acceso e a tutto schermo. Per tornare a questo menu: tasto <b>Esc</b> (o il gesto "indietro"), poi ricarica la pagina.
+      Consiglio: tablet in carica e con "Fissa app" attivo.</p>
+    <a class="credit" href="https://www.formazionesicurezza.org/index.html" target="_blank" rel="noopener">
+      <small>App e sito realizzati da</small>
+      <strong>formazionesicurezza.org</strong>
+      <small style="letter-spacing:.04em;text-transform:none;font-weight:600">Antonio Mangiamele</small>
+    </a>
+  </main>
+  <iframe id="frame" title="Demo PCGL" allow="autoplay; fullscreen; camera; microphone; geolocation; screen-wake-lock"></iframe>
+  <button type="button" id="esci" aria-label="Torna al menu dello stand">menu</button>
+
+<script>
+(function(){
+  "use strict";
+  var frame = document.getElementById("frame"), menu = document.getElementById("menu"), esci = document.getElementById("esci");
+  var lock = null;
+  function keepAwake(){
+    if(!("wakeLock" in navigator)) return;
+    navigator.wakeLock.request("screen").then(function(l){ lock = l; }).catch(function(){ /* non disponibile: lasciare il tablet in carica */ });
+  }
+  // il blocco dello spegnimento si perde quando la pagina va in secondo piano: lo si riprende al ritorno
+  document.addEventListener("visibilitychange", function(){ if(document.visibilityState === "visible" && frame.style.display === "block") keepAwake(); });
+  function avvia(url){
+    var el = document.documentElement;
+    var fs = el.requestFullscreen || el.webkitRequestFullscreen;
+    if(fs){ try { var p = fs.call(el); if(p && p.catch) p.catch(function(){}); } catch(err) { /* schermo intero non disponibile */ } }
+    keepAwake();
+    frame.src = url;
+    frame.style.display = "block";
+    menu.style.display = "none";
+    esci.style.display = "block";
+    setTimeout(function(){ try { frame.focus(); } catch(err) {} }, 300);
+  }
+  function menuStand(){
+    frame.style.display = "none"; frame.src = "about:blank";
+    menu.style.display = ""; esci.style.display = "none";
+    if(lock){ lock.release().catch(function(){}); lock = null; }
+  }
+  [].forEach.call(document.querySelectorAll("button.go"), function(b){
+    b.addEventListener("click", function(){ avvia(b.getAttribute("data-url")); });
+  });
+  // pulsante quasi invisibile in alto al centro: doppio tocco per tornare al menu (per chi gestisce lo stand)
+  var lastTap = 0;
+  esci.addEventListener("click", function(){ var now = Date.now(); if(now - lastTap < 600) menuStand(); lastTap = now; });
+  document.addEventListener("keydown", function(e){ if(e.key === "Escape" && frame.style.display === "block" && !document.fullscreenElement) menuStand(); });
+})();
+</script>
+</body>
+</html>
