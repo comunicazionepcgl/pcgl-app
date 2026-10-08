@@ -250,6 +250,68 @@ const CACHE = {
   VEHICLES: 'pcgl_cache_vehicles'
 };
 
+// --- REGISTRO FIRME DELLO STAND (contatti lasciati dai visitatori in fiera; solo Coordinamento) ---
+const INTERESSI_FIERA = { volontariato: 'Diventare volontario', formazione: 'Corsi e formazione', collaborazione: 'Collaborazione enti/aziende', app: "App emergenze" };
+const ContattiFieraView = ({ onBack, showToast, canDelete }) => {
+    const [firme, setFirme] = useState(null);
+    const [filtro, setFiltro] = useState('');
+    useEffect(() => {
+        const q = query(collection(db, 'contatti_fiera'), orderBy('dataFirma', 'desc'));
+        return onSnapshot(q, s => setFirme(s.docs.map(d => ({ id: d.id, ...d.data() }))), e => { console.error(e); setFirme([]); showToast("Accesso al registro non consentito.", 'error'); });
+    }, []);
+    const quando = f => f.dataFirma?.toDate ? f.dataFirma.toDate() : new Date(f.dataFirma);
+    const visibili = (firme || []).filter(f => !filtro || `${f.nome} ${f.cognome} ${f.email} ${f.comune || ''}`.toLowerCase().includes(filtro.toLowerCase()));
+    const esporta = () => {
+        const cella = v => `"${String(v ?? '').replace(/"/g, '""')}"`;
+        const righe = [['Data', 'Nome', 'Cognome', 'Email', 'Telefono', 'Comune', 'Interessi', 'Note', 'Consenso newsletter', 'Evento'].map(cella).join(';')];
+        visibili.forEach(f => righe.push([quando(f).toLocaleString('it-IT'), f.nome, f.cognome, f.email, f.telefono, f.comune, (f.interessi || []).map(i => INTERESSI_FIERA[i] || i).join(', '), f.note, f.consensoNewsletter ? 'Sì' : 'No', f.evento].map(cella).join(';')));
+        const blob = new Blob(['﻿' + righe.join('\r\n')], { type: 'text/csv;charset=utf-8' });
+        const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = `registro-firme-stand-${new Date().toISOString().slice(0, 10)}.csv`; a.click(); URL.revokeObjectURL(a.href);
+    };
+    const elimina = async f => {
+        if (!window.confirm(`Eliminare la firma di ${f.nome} ${f.cognome}? (es. richiesta di cancellazione dei dati)`)) return;
+        try { await deleteDoc(doc(db, 'contatti_fiera', f.id)); showToast("Firma eliminata."); } catch (e) { showToast("Errore eliminazione.", 'error'); }
+    };
+    return (
+      <div className="animate-in slide-in-from-right duration-500 w-full pb-40">
+        <HeaderSub title="Registro firme stand" onBack={onBack} />
+        <div className="bg-white p-5 rounded-3xl shadow-card border border-gray-100 mb-4">
+            <p className="text-sm text-gray-600">Visitatori dello stand che hanno lasciato i contatti per essere ricontattati, con consenso privacy. Dati riservati: usarli solo per ricontattare chi lo ha chiesto.</p>
+            <div className="flex flex-wrap gap-2 mt-4">
+                <input type="text" placeholder="Cerca nome, email, comune..." value={filtro} onChange={e => setFiltro(e.target.value)} className="flex-1 min-w-[180px] p-3 bg-gray-50 rounded-xl border border-gray-200 text-sm" />
+                <button onClick={esporta} disabled={!visibili.length} className="px-4 py-3 bg-green-600 text-white rounded-xl font-bold uppercase text-xs shadow-md flex items-center disabled:opacity-40"><FileSpreadsheet size={16} className="mr-2"/> Esporta CSV</button>
+            </div>
+            <p className="text-xs text-gray-400 mt-2">{firme === null ? 'Caricamento...' : `${visibili.length} firme`}</p>
+        </div>
+        <div className="space-y-3">
+            {visibili.map(f => (
+                <div key={f.id} className="bg-white p-4 rounded-2xl shadow-sm border border-gray-100">
+                    <div className="flex justify-between items-start gap-3">
+                        <div className="min-w-0">
+                            <p className="font-black text-pcgl-blue uppercase">{f.nome} {f.cognome}</p>
+                            <p className="text-sm text-gray-600 flex flex-wrap gap-x-4 gap-y-1 mt-1">
+                                <a href={`mailto:${f.email}`} className="flex items-center hover:underline"><Mail size={14} className="mr-1"/>{f.email}</a>
+                                {f.telefono && <a href={`tel:${f.telefono}`} className="flex items-center hover:underline"><Phone size={14} className="mr-1"/>{f.telefono}</a>}
+                                {f.comune && <span>{f.comune}</span>}
+                            </p>
+                            {(f.interessi || []).length > 0 && <div className="flex flex-wrap gap-1 mt-2">{f.interessi.map(i => <span key={i} className="text-[10px] font-bold uppercase bg-blue-50 text-pcgl-blue px-2 py-0.5 rounded">{INTERESSI_FIERA[i] || i}</span>)}</div>}
+                            {f.note && <p className="text-xs text-gray-500 mt-2 italic">“{f.note}”</p>}
+                        </div>
+                        <div className="text-right shrink-0">
+                            <p className="text-[10px] text-gray-400">{quando(f).toLocaleString('it-IT', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}</p>
+                            <p className="text-[10px] text-gray-400">{f.evento}</p>
+                            {f.consensoNewsletter && <p className="text-[10px] font-bold text-green-600">Newsletter sì</p>}
+                            {canDelete && <button onClick={() => elimina(f)} className="mt-2 p-2 text-red-500 hover:bg-red-50 rounded-lg" title="Elimina"><Trash2 size={16}/></button>}
+                        </div>
+                    </div>
+                </div>
+            ))}
+            {firme !== null && !visibili.length && <p className="text-center text-gray-500 py-8">Nessuna firma.</p>}
+        </div>
+      </div>
+    );
+};
+
 // --- COMPONENTE PUBBLICO: PRESA PRESENZE (NO LOGIN RICHIESTO) ---
 const PublicAttendance = ({ sessionId }) => {
     const [sessionData, setSessionData] = useState(null);
@@ -5666,6 +5728,9 @@ function AppContent() {
               <button onClick={() => setSubPage('gestione_presenze')} className="w-full py-4 bg-pcgl-blue text-white rounded-2xl font-black uppercase shadow-lg hover:bg-blue-800 transition-all flex items-center justify-center">
                   <QrCode className="mr-3" size={24}/> Gestione Presenze Live (QR)
               </button>
+              <button onClick={() => setSubPage('contatti_fiera')} className="w-full mt-3 py-4 bg-white text-pcgl-blue border-2 border-pcgl-blue rounded-2xl font-black uppercase shadow-md hover:bg-blue-50 transition-all flex items-center justify-center">
+                  <Users className="mr-3" size={24}/> Registro firme stand (REAS)
+              </button>
           </div>
 
           <div className="space-y-6 font-sans text-pcgl-text-dark">
@@ -5749,6 +5814,10 @@ function AppContent() {
         </div>
       );
       }
+
+      case 'contatti_fiera': return (
+        <ContattiFieraView onBack={() => setSubPage('gestione_corsi_admin')} showToast={showToast} canDelete={['admin', 'superadmin', 'coordinamento'].includes(userData?.ruolo)} />
+      );
 
       case 'gestione_presenze': {
         const activeSessionData = selectedSession ? (attendanceSessions.find(s => s.id === selectedSession.id) || selectedSession) : null;

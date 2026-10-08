@@ -524,6 +524,32 @@ service cloud.firestore {
 
     // Statistiche precalcolate dalle Cloud Functions (es. classifica volontari).
     // Leggibili da chi vede la pagina Statistiche; scritte solo dal backend.
+    // Registro firme dello stand in fiera (REAS): i visitatori lasciano i contatti per essere ricontattati.
+    // Chiunque può solo AGGIUNGERE una firma, con consenso privacy obbligatorio e campi validati;
+    // leggere, modificare e cancellare è riservato al Coordinamento.
+    function testoFirma(v, min, max) {
+      return v is string && v.size() >= min && v.size() <= max;
+    }
+    match /contatti_fiera/{id} {
+      allow create: if request.resource.data.keys().hasOnly(['nome', 'cognome', 'email', 'telefono', 'comune', 'interessi', 'note', 'consensoPrivacy', 'consensoNewsletter', 'evento', 'dataFirma', 'versioneInformativa'])
+        && request.resource.data.keys().hasAll(['nome', 'cognome', 'email', 'consensoPrivacy', 'evento', 'dataFirma'])
+        && request.resource.data.consensoPrivacy == true
+        && testoFirma(request.resource.data.nome, 1, 60)
+        && testoFirma(request.resource.data.cognome, 1, 60)
+        && testoFirma(request.resource.data.email, 5, 120) && request.resource.data.email.matches('^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$')
+        && testoFirma(request.resource.data.get('telefono', '-'), 0, 25)
+        && testoFirma(request.resource.data.get('comune', '-'), 0, 60)
+        && testoFirma(request.resource.data.get('note', '-'), 0, 500)
+        && (request.resource.data.get('interessi', []) is list && request.resource.data.get('interessi', []).size() <= 5)
+        && request.resource.data.get('consensoNewsletter', false) is bool
+        && testoFirma(request.resource.data.evento, 1, 60)
+        && testoFirma(request.resource.data.get('versioneInformativa', '-'), 0, 40)
+        && request.resource.data.dataFirma is timestamp
+        && request.resource.data.dataFirma > request.time - duration.value(2, 'd')
+        && request.resource.data.dataFirma < request.time + duration.value(1, 'h');
+      allow read, update, delete: if isSignedIn() && isCoordinamento();
+    }
+
     // Totali anonimi (volontari attivi, sedi, mezzi, interventi): pubblici, scritti solo dal backend.
     match /statistiche_pubbliche/{docId} {
       allow read: if true;
