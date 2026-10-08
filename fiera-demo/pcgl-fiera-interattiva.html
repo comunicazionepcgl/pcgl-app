@@ -1761,6 +1761,10 @@
     var lat = (39.9925 + 0.002 * Math.sin(t * 0.2)).toFixed(4), lng = (15.7107 + 0.003 * Math.cos(t * 0.17)).toFixed(4); /* Cristo Redentore di Maratea, dove sono state girate le riprese */
     var batt = Math.max(12, Math.floor(87 - t * 0.03));
     document.getElementById("liveClock").textContent = new Date().toLocaleTimeString("it-IT");
+    // In diretta i dati di volo simulati non hanno senso: si mostrano solo le immagini vere
+    var statsBox = document.getElementById("liveBatt").parentElement.parentElement;
+    statsBox.hidden = droneLive.on;
+    if(droneLive.on){ document.getElementById("liveTelemetry").textContent = "Diretta dal campo"; document.getElementById("liveCoords").textContent = ""; return; }
     document.getElementById("liveTelemetry").textContent = "ALT " + alt + " m - " + spd + " km/h";
     document.getElementById("liveCoords").textContent = lat + " N " + lng + " E";
     document.getElementById("liveBatt").textContent = batt + "%";
@@ -2105,7 +2109,7 @@
     document.getElementById("wallDate").textContent = d.toLocaleDateString("it-IT", {weekday: "long", day: "numeric", month: "long"});
     document.getElementById("wallDroneLabel").textContent = "APR DJI MAVIC 3E - " + wall.mode.toUpperCase();
     var t = (performance.now() - wall.t0) / 1000;
-    document.getElementById("wallDroneTele").textContent = "ALT " + Math.round(118 + 6 * Math.sin(t * 0.3)) + " m - " + Math.round(32 + 5 * Math.sin(t * 0.5)) + " km/h";
+    document.getElementById("wallDroneTele").textContent = droneLive.on ? "Diretta dal campo" : "ALT " + Math.round(118 + 6 * Math.sin(t * 0.3)) + " m - " + Math.round(32 + 5 * Math.sin(t * 0.5)) + " km/h";
     function tile(n, l, tag){
       return '<div class="bg-white/5 border border-white/10 rounded-2xl p-3"><div class="text-3xl font-black tabular text-pcgl-yellow leading-none">' + n + '</div><div class="text-[10px] font-bold uppercase tracking-widest text-white/80 mt-1">' + l + '</div><div class="text-[9px] uppercase tracking-widest text-white/40">' + tag + '</div></div>';
     }
